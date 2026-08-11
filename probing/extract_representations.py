@@ -173,47 +173,6 @@ def pad_and_concatenate(tensor_list, pad_dim=1):
     return torch.cat(padded, dim=0)
 
 
-def flush_rep_shards(batch_reps, shard_dir, shard_idx, registry):
-    """Spill each layer's accumulated batch tensors to a shard file on disk.
-
-    Holding every layer's full output in RAM until the end peaks at ~11 GB for
-    the 43k-sample test set (8 layers x [n, seq, 256] float32), which OOM-kills
-    the process on memory-constrained machines. Instead we periodically
-    concatenate the batches collected so far, write them to a per-layer shard
-    file, clear the in-RAM list, and record (path, seq_len) so the final pass
-    can pad-and-stitch the shards. Peak RAM is then bounded by the flush
-    interval rather than the dataset size.
-    """
-    for key, tensors in batch_reps.items():
-        if not tensors:
-            continue
-        rep = pad_and_concatenate(tensors, pad_dim=1)  # [n, local_max, embed]
-        layer_type, layer_index = key
-        path = os.path.join(shard_dir, f"{layer_type}_{layer_index}__shard{shard_idx}.pt")
-        torch.save(rep, path)
-        registry.setdefault(key, []).append((path, int(rep.shape[1])))
-        tensors.clear()
-
-
-def assemble_layer_from_shards(entries):
-    """Load a layer's shards, pad each to the global max seq_len, concat on dim 0.
-
-    Mirrors pad_and_concatenate's semantics (zero-pad the tail of each sample up
-    to the global maximum sequence length) but only ever holds one layer in RAM.
-    """
-    global_max = max(seq_len for _, seq_len in entries)
-    parts = []
-    for path, seq_len in entries:
-        t = torch.load(path)
-        if t.shape[1] < global_max:
-            pad = torch.zeros(
-                t.shape[0], global_max - t.shape[1], t.shape[2], dtype=t.dtype
-            )
-            t = torch.cat([t, pad], dim=1)
-        parts.append(t)
-    return torch.cat(parts, dim=0)
-
-
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
@@ -307,16 +266,11 @@ def main():
     hook_manager = HookManager()
     hook_manager.register_hooks(model)
 
-    # Representation shards are spilled to disk next to the final output so the
-    # whole 8-layer activation tensor never has to live in RAM at once.
     os.makedirs(output_path, exist_ok=True)
-    shard_dir = output_path + "__shards"
-    os.makedirs(shard_dir, exist_ok=True)
-    shard_registry = {}  # (layer_type, layer_index) -> [(shard_path, seq_len), ...]
-    SHARD_EVERY = 200    # flush to disk every N batches (~6.4k samples at bs=32)
-    shard_idx = 0
 
-    # Collect representations via teacher-forced forward passes
+    # All layer activations are accumulated in RAM and written out at the end.
+    # Peak usage is ~11 GB for the 43k-sample test set (8 layers x
+    # [n, seq, 256] float32).
     # Key: (layer_type, layer_index) -> list of [batch_size, seq_len, embed_dim] tensors
     batch_reps = {}
     batch_src_masks = []
@@ -327,7 +281,6 @@ def main():
     sep_idx = data.source_c2i.get("#")
 
     global_offset = 0
-    batch_count = 0
     with torch.no_grad():
         for src, src_mask, trg, trg_mask in data.test_batch_sample(args.batch_size):
             # src_mask: [seq_len, batch_size], float, 1=valid 0=pad
@@ -365,18 +318,9 @@ def main():
 
             hook_manager.clear()
 
-            # Periodically spill collected reps to disk to bound peak RAM.
-            batch_count += 1
-            if batch_count % SHARD_EVERY == 0:
-                flush_rep_shards(batch_reps, shard_dir, shard_idx, shard_registry)
-                shard_idx += 1
-
     hook_manager.remove_hooks()
 
-    # Flush any remaining (< SHARD_EVERY) batches.
-    flush_rep_shards(batch_reps, shard_dir, shard_idx, shard_registry)
-
-    if not shard_registry:
+    if not batch_reps:
         logger.error("No representations collected -- check model and data")
         sys.exit(EXIT_ERROR)
 
@@ -392,10 +336,10 @@ def main():
     n_encoder_layers = 0
     n_decoder_layers = 0
 
-    # Assemble and save one layer at a time, deleting its shards immediately so
-    # neither RAM (one layer) nor disk (one extra layer) blows up.
-    for (layer_type, layer_index), entries in sorted(shard_registry.items()):
-        rep = assemble_layer_from_shards(entries)  # [n_samples, seq_len, embed_dim]
+    for layer_type, layer_index in sorted(batch_reps):
+        # Free each layer's batch list as it is assembled and saved.
+        tensors = batch_reps.pop((layer_type, layer_index))
+        rep = pad_and_concatenate(tensors, pad_dim=1)  # [n_samples, seq_len, embed_dim]
         embed_dim = rep.shape[2]
 
         filename = f"{layer_type}_layer_{layer_index}.pt"
@@ -411,20 +355,12 @@ def main():
 
         logger.info("Saved %s: shape %s", filename, list(rep.shape))
 
-        del rep
-        for shard_path, _ in entries:
-            os.remove(shard_path)
+        del rep, tensors
 
         if layer_type == "encoder":
             n_encoder_layers += 1
         else:
             n_decoder_layers += 1
-
-    # Remove the (now-empty) shard scratch directory.
-    try:
-        os.rmdir(shard_dir)
-    except OSError:
-        pass
 
     metadata = {
         "embed_dim": embed_dim,
