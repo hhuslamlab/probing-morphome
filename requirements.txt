@@ -1,0 +1,11 @@
+# Python 3.11. Versions pinned to the environment the paper's results were
+# produced with; newer versions will likely work but are not bit-verified.
+# fairseq is deliberately NOT required: fairseq checkpoints are loaded by a
+# pure-PyTorch reimplementation (extract_representations_{vanilla,char_sep}.py).
+numpy==2.4.2
+torch==2.10.0
+scikit-learn==1.8.0
+pandas==3.0.0
+matplotlib==3.10.8
+docopt==0.6.2
+pytest==9.0.2

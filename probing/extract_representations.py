@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""Extract hidden state representations from a single model configuration.
+
+Usage:
+  extract_representations.py --model-type TYPE --split SPLIT --run RUN --checkpoint FILE
+                             [--data-dir DIR] [--output-dir DIR] [--batch-size N]
+                             [--baseline MODE] [--baseline-seed N]
+  extract_representations.py (-h | --help)
+
+Options:
+  --model-type TYPE   Architecture (one of the five MODEL_TYPES).
+  --split SPLIT       Data split, e.g. 90L_10NL.
+  --run RUN           Run identifier, e.g. 1_1.
+  --checkpoint FILE   Path to the model checkpoint file.
+  --data-dir DIR      Base data directory [default: FEATURE_INFORMED_DATA].
+  --output-dir DIR    Output directory for representations
+                      [default: data/probing/representations].
+  --batch-size N      Batch size for inference [default: 32].
+  --baseline MODE     Baseline mode for selectivity: none, random_init
+                      (re-initialise all model weights, i.e. representations
+                      from an untrained encoder of identical architecture), or
+                      scrambled_input (permute non-pad source positions per
+                      sample before the forward pass). Outputs go to a
+                      baseline-suffixed directory so they do not overwrite
+                      real extractions [default: none].
+  --baseline-seed N   Seed for baseline randomisation (weight reset / input
+                      scramble) [default: 1337].
+"""
+
+import json
+import logging
+import os
+import sys
+
+import numpy as np
+import torch
+
+# Add scripts/ to sys.path so torch.load can unpickle model classes
+# (models were saved when 'transformer', 'binary_feature_transformer' etc. were top-level imports)
+from probing import FEATURE_INFORMED_ROOT
+
+_scripts_dir = os.path.join(FEATURE_INFORMED_ROOT, "scripts")
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+
+from probing import MODEL_TYPES, SPLITS, EXIT_SUCCESS, EXIT_ERROR, EXIT_SKIPPED
+from probing.utils.cli import parse, standard_sentinels
+from probing.utils.hooks import HookManager
+from probing.utils.content_mask import build_content_mask
+
+logger = logging.getLogger("probing.extract")
+
+
+def parse_args():
+    return parse(__doc__,
+                 types=dict(batch_size=int, baseline_seed=int),
+                 choices=dict(model_type=MODEL_TYPES, split=SPLITS,
+                              baseline=("none", "random_init", "scrambled_input")),
+                 sentinels=standard_sentinels())
+
+
+def reset_model_weights(model, seed):
+    """Re-initialise every parameter in-place, deterministically.
+
+    Walks the module tree and calls reset_parameters() on every submodule that
+    exposes it (Linear, LayerNorm, Embedding, MultiheadAttention, Conv*, …).
+    For any leaf parameter not touched by reset_parameters, we fall back to a
+    small-variance normal draw.  This preserves architecture exactly and
+    matches what a freshly constructed model would produce, up to ordering of
+    init calls — which we fix with a torch.manual_seed.
+    """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    touched_param_ids = set()
+    for module in model.modules():
+        if module is model:
+            continue
+        if hasattr(module, "reset_parameters") and callable(module.reset_parameters):
+            try:
+                module.reset_parameters()
+                for p in module.parameters(recurse=False):
+                    touched_param_ids.add(id(p))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "reset_parameters failed on %s: %s — will fall back to normal init",
+                    module.__class__.__name__, e,
+                )
+
+    fallback_count = 0
+    for name, param in model.named_parameters():
+        if id(param) in touched_param_ids:
+            continue
+        with torch.no_grad():
+            if param.dim() >= 2:
+                torch.nn.init.normal_(param, mean=0.0, std=0.02)
+            else:
+                torch.nn.init.zeros_(param)
+        fallback_count += 1
+    if fallback_count:
+        logger.info("random_init fallback applied to %d parameters", fallback_count)
+
+
+def scramble_src(src, src_mask, global_offset, base_seed):
+    """Permute non-pad source positions per sample, deterministically.
+
+    src:      [seq_len, batch_size] long tensor of token ids
+    src_mask: [seq_len, batch_size] float/byte mask, nonzero = valid
+
+    Each column (sample) has its valid positions permuted independently.  The
+    permutation seed is derived from (base_seed, global_offset + column_idx)
+    so that the same dataset position always gets the same permutation across
+    runs and is independent of batch boundaries.
+    """
+    seq_len, batch_size = src.shape
+    out = src.clone()
+    for b in range(batch_size):
+        valid_pos = (src_mask[:, b] > 0).nonzero(as_tuple=True)[0]
+        if valid_pos.numel() < 2:
+            continue
+        rng = np.random.RandomState(base_seed + global_offset + b)
+        perm = rng.permutation(valid_pos.numel())
+        valid_pos_cpu = valid_pos.detach().cpu()
+        perm_pos = valid_pos_cpu[perm].to(valid_pos.device)
+        out[valid_pos, b] = src[perm_pos, b]
+    return out
+
+
+def _baseline_output_dir(base_dir, baseline):
+    if baseline == "none":
+        return base_dir
+    return f"{base_dir}__{baseline}"
+
+
+def get_data_files(data_dir, split, run):
+    """Construct train/dev/test file paths from split and run identifier.
+
+    File naming convention: {subset}.{split}_{run}.src/.tgt
+    Directory structure: {data_dir}/{split}/{subset}/run{run_num}/
+    """
+    run_num = run.split("_")[0]
+    model_name = f"{split}_{run}"
+
+    result = {}
+    for subset in ("train", "dev", "test"):
+        src = os.path.join(data_dir, split, subset, f"run{run_num}", f"{subset}.{model_name}.src")
+        tgt = os.path.join(data_dir, split, subset, f"run{run_num}", f"{subset}.{model_name}.tgt")
+        result[subset] = [src, tgt]
+
+    return result
+
+
+def pad_and_concatenate(tensor_list, pad_dim=1):
+    """Pad tensors to the same size along pad_dim, then concatenate along dim 0.
+
+    Args:
+        tensor_list: list of tensors with potentially different sizes along pad_dim.
+        pad_dim: dimension to pad (default 1 = seq_len for [batch, seq_len, ...]).
+
+    Returns:
+        Concatenated tensor with uniform size along pad_dim.
+    """
+    max_size = max(t.shape[pad_dim] for t in tensor_list)
+    padded = []
+    for t in tensor_list:
+        pad_amount = max_size - t.shape[pad_dim]
+        if pad_amount > 0:
+            pad_shape = list(t.shape)
+            pad_shape[pad_dim] = pad_amount
+            padding = torch.zeros(pad_shape, dtype=t.dtype)
+            t = torch.cat([t, padding], dim=pad_dim)
+        padded.append(t)
+    return torch.cat(padded, dim=0)
+
+
+def flush_rep_shards(batch_reps, shard_dir, shard_idx, registry):
+    """Spill each layer's accumulated batch tensors to a shard file on disk.
+
+    Holding every layer's full output in RAM until the end peaks at ~11 GB for
+    the 43k-sample test set (8 layers x [n, seq, 256] float32), which OOM-kills
+    the process on memory-constrained machines. Instead we periodically
+    concatenate the batches collected so far, write them to a per-layer shard
+    file, clear the in-RAM list, and record (path, seq_len) so the final pass
+    can pad-and-stitch the shards. Peak RAM is then bounded by the flush
+    interval rather than the dataset size.
+    """
+    for key, tensors in batch_reps.items():
+        if not tensors:
+            continue
+        rep = pad_and_concatenate(tensors, pad_dim=1)  # [n, local_max, embed]
+        layer_type, layer_index = key
+        path = os.path.join(shard_dir, f"{layer_type}_{layer_index}__shard{shard_idx}.pt")
+        torch.save(rep, path)
+        registry.setdefault(key, []).append((path, int(rep.shape[1])))
+        tensors.clear()
+
+
+def assemble_layer_from_shards(entries):
+    """Load a layer's shards, pad each to the global max seq_len, concat on dim 0.
+
+    Mirrors pad_and_concatenate's semantics (zero-pad the tail of each sample up
+    to the global maximum sequence length) but only ever holds one layer in RAM.
+    """
+    global_max = max(seq_len for _, seq_len in entries)
+    parts = []
+    for path, seq_len in entries:
+        t = torch.load(path)
+        if t.shape[1] < global_max:
+            pad = torch.zeros(
+                t.shape[0], global_max - t.shape[1], t.shape[2], dtype=t.dtype
+            )
+            t = torch.cat([t, pad], dim=1)
+        parts.append(t)
+    return torch.cat(parts, dim=0)
+
+
+def main():
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
+
+    # Check idempotency: if output already exists, skip.  The output root is
+    # suffixed when running in a baseline mode so we never overwrite the real
+    # extraction with random-init or scrambled-input activations.
+    effective_output_dir = _baseline_output_dir(args.output_dir, args.baseline)
+    output_path = os.path.join(effective_output_dir, args.model_type, f"{args.split}_{args.run}")
+    check_file = os.path.join(output_path, "encoder_layer_0.pt")
+    if os.path.exists(check_file):
+        logger.info(
+            "Skipping %s/%s_%s (baseline=%s) -- already extracted",
+            args.model_type, args.split, args.run, args.baseline,
+        )
+        sys.exit(EXIT_SKIPPED)
+
+    files = get_data_files(args.data_dir, args.split, args.run)
+    for subset, paths in files.items():
+        for path in paths:
+            if not os.path.exists(path):
+                logger.error("Missing %s file: %s", subset, path)
+                sys.exit(EXIT_ERROR)
+
+    if not os.path.exists(args.checkpoint):
+        logger.error("Checkpoint not found: %s", args.checkpoint)
+        sys.exit(EXIT_ERROR)
+
+    # Import model classes so torch.load can unpickle them.  transformer is
+    # always required: vanilla / character_separated use Transformer directly,
+    # and feature_invariant is TagTransformer (defined there too). The other
+    # two modules are only needed to unpickle their own architectures; import
+    # them best-effort so a missing optional dependency (e.g.
+    # feature_engineering) doesn't block unrelated extractions.
+    import transformer  # noqa: F401
+    for _optional_model_module in ("binary_feature_transformer", "independent_feature_transformer"):
+        try:
+            __import__(_optional_model_module)
+        except ImportError as e:
+            logger.warning(
+                "Optional model module %s unavailable (%s); "
+                "checkpoints of that architecture cannot be unpickled.",
+                _optional_model_module, e,
+            )
+
+    # Some checkpoints (e.g. several feature_invariant 50L/90L runs) were pickled
+    # from a repo layout where these modules lived under a top-level `src`
+    # package, so their globals are qualified as `src.transformer.TagTransformer`
+    # etc. Alias `src.<mod>` to the already-imported flat module so torch.load can
+    # resolve them. Best-effort: only modules that imported successfully are aliased.
+    import types
+    _src_pkg = sys.modules.get("src")
+    if _src_pkg is None:
+        _src_pkg = types.ModuleType("src")
+        _src_pkg.__path__ = []  # mark as a package
+        sys.modules["src"] = _src_pkg
+    for _flat in ("transformer", "binary_feature_transformer",
+                  "independent_feature_transformer", "dataloader"):
+        if _flat in sys.modules:
+            sys.modules.setdefault(f"src.{_flat}", sys.modules[_flat])
+
+    # All five architectures use TagInBracketsDataLoader with the
+    # taginbrackets dataset; they differ only in how features are embedded.
+    from dataloader import TagInBracketsDataLoader
+
+    data = TagInBracketsDataLoader(
+        files["train"], files["dev"], files["test"], shuffle=False
+    )
+    logger.info(
+        "Loaded data: %d source vocab, %d target vocab",
+        data.source_vocab_size,
+        data.target_vocab_size,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    model = model.to(device)
+    model.eval()
+    logger.info("Loaded model from %s (device: %s)", args.checkpoint, device)
+
+    if args.baseline == "random_init":
+        logger.info("Baseline=random_init: resetting all model weights (seed=%d)", args.baseline_seed)
+        reset_model_weights(model, args.baseline_seed)
+        model.eval()
+    elif args.baseline == "scrambled_input":
+        logger.info(
+            "Baseline=scrambled_input: source positions will be permuted per sample (seed=%d)",
+            args.baseline_seed,
+        )
+
+    hook_manager = HookManager()
+    hook_manager.register_hooks(model)
+
+    # Representation shards are spilled to disk next to the final output so the
+    # whole 8-layer activation tensor never has to live in RAM at once.
+    os.makedirs(output_path, exist_ok=True)
+    shard_dir = output_path + "__shards"
+    os.makedirs(shard_dir, exist_ok=True)
+    shard_registry = {}  # (layer_type, layer_index) -> [(shard_path, seq_len), ...]
+    SHARD_EVERY = 200    # flush to disk every N batches (~6.4k samples at bs=32)
+    shard_idx = 0
+
+    # Collect representations via teacher-forced forward passes
+    # Key: (layer_type, layer_index) -> list of [batch_size, seq_len, embed_dim] tensors
+    batch_reps = {}
+    batch_src_masks = []
+    batch_trg_masks = []
+    # Content masks (character positions only) for leakage-free pooling.
+    batch_src_content_masks = []
+    batch_trg_content_masks = []
+    sep_idx = data.source_c2i.get("#")
+
+    global_offset = 0
+    batch_count = 0
+    with torch.no_grad():
+        for src, src_mask, trg, trg_mask in data.test_batch_sample(args.batch_size):
+            # src_mask: [seq_len, batch_size], float, 1=valid 0=pad
+            if args.baseline == "scrambled_input":
+                src = scramble_src(
+                    src, src_mask, global_offset=global_offset, base_seed=args.baseline_seed,
+                )
+
+            batch_src_masks.append(src_mask.transpose(0, 1).bool())  # [batch, src_seq_len]
+            batch_trg_masks.append(trg_mask.transpose(0, 1).bool())  # [batch, trg_seq_len]
+
+            # Content masks: derived from the (possibly scrambled) tokens, so they
+            # stay aligned with the reps even under baseline=scrambled_input.
+            batch_src_content_masks.append(
+                build_content_mask(
+                    src, "encoder",
+                    source_vocab_size=data.source_vocab_size,
+                    nb_attr=data.nb_attr,
+                    sep_idx=sep_idx,
+                )
+            )
+            batch_trg_content_masks.append(build_content_mask(trg, "decoder"))
+
+            # Teacher-forced forward pass; model handles device transfer internally
+            _ = model(src, src_mask, trg, trg_mask)
+            global_offset += src.shape[1]
+
+            reps = hook_manager.get_representations()
+            for key, tensors in reps.items():
+                if key not in batch_reps:
+                    batch_reps[key] = []
+                # Each tensor: [seq_len, batch_size, embed_dim] -> [batch_size, seq_len, embed_dim]
+                for t in tensors:
+                    batch_reps[key].append(t.transpose(0, 1))
+
+            hook_manager.clear()
+
+            # Periodically spill collected reps to disk to bound peak RAM.
+            batch_count += 1
+            if batch_count % SHARD_EVERY == 0:
+                flush_rep_shards(batch_reps, shard_dir, shard_idx, shard_registry)
+                shard_idx += 1
+
+    hook_manager.remove_hooks()
+
+    # Flush any remaining (< SHARD_EVERY) batches.
+    flush_rep_shards(batch_reps, shard_dir, shard_idx, shard_registry)
+
+    if not shard_registry:
+        logger.error("No representations collected -- check model and data")
+        sys.exit(EXIT_ERROR)
+
+    # Masks are tiny (no embed dim) so they stay in RAM; pad to global max seq_len.
+    src_masks = pad_and_concatenate(batch_src_masks, pad_dim=1)  # [n_samples, max_src_len]
+    trg_masks = pad_and_concatenate(batch_trg_masks, pad_dim=1)  # [n_samples, max_trg_len]
+    # Same padding/concat path → content masks are row/col aligned with the reps.
+    src_content_masks = pad_and_concatenate(batch_src_content_masks, pad_dim=1)
+    trg_content_masks = pad_and_concatenate(batch_trg_content_masks, pad_dim=1)
+
+    n_samples = src_masks.shape[0]
+    embed_dim = None
+    n_encoder_layers = 0
+    n_decoder_layers = 0
+
+    # Assemble and save one layer at a time, deleting its shards immediately so
+    # neither RAM (one layer) nor disk (one extra layer) blows up.
+    for (layer_type, layer_index), entries in sorted(shard_registry.items()):
+        rep = assemble_layer_from_shards(entries)  # [n_samples, seq_len, embed_dim]
+        embed_dim = rep.shape[2]
+
+        filename = f"{layer_type}_layer_{layer_index}.pt"
+        torch.save(rep, os.path.join(output_path, filename))
+
+        mask = src_masks if layer_type == "encoder" else trg_masks
+        mask_filename = f"{layer_type}_layer_{layer_index}_mask.pt"
+        torch.save(mask, os.path.join(output_path, mask_filename))
+
+        content_mask = src_content_masks if layer_type == "encoder" else trg_content_masks
+        content_mask_filename = f"{layer_type}_layer_{layer_index}_content_mask.pt"
+        torch.save(content_mask, os.path.join(output_path, content_mask_filename))
+
+        logger.info("Saved %s: shape %s", filename, list(rep.shape))
+
+        del rep
+        for shard_path, _ in entries:
+            os.remove(shard_path)
+
+        if layer_type == "encoder":
+            n_encoder_layers += 1
+        else:
+            n_decoder_layers += 1
+
+    # Remove the (now-empty) shard scratch directory.
+    try:
+        os.rmdir(shard_dir)
+    except OSError:
+        pass
+
+    metadata = {
+        "embed_dim": embed_dim,
+        "n_encoder_layers": n_encoder_layers,
+        "n_decoder_layers": n_decoder_layers,
+        "n_samples": n_samples,
+        "src_seq_len": int(src_masks.shape[1]),
+        "trg_seq_len": int(trg_masks.shape[1]),
+        "baseline": args.baseline,
+        "baseline_seed": args.baseline_seed if args.baseline != "none" else None,
+        "mean_src_content_tokens": float(src_content_masks.float().sum(dim=1).mean()),
+        "mean_trg_content_tokens": float(trg_content_masks.float().sum(dim=1).mean()),
+    }
+    with open(os.path.join(output_path, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info(
+        "Extraction complete: %d samples, %d encoder + %d decoder layers, embed_dim=%d",
+        n_samples,
+        n_encoder_layers,
+        n_decoder_layers,
+        embed_dim,
+    )
+    sys.exit(EXIT_SUCCESS)
+
+
+if __name__ == "__main__":
+    main()
