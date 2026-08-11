@@ -107,7 +107,7 @@ def main():
     df["lkey"] = df.apply(layer_key, axis=1)
     df["layer"] = df.apply(layer_label, axis=1)
 
-    # ---- 1. summary CSV: mean/std over runs ----
+    # 1. summary CSV: mean/std over runs
     metrics = ["balanced_accuracy", "selectivity", "control_balanced_accuracy",
                "raw_accuracy", "majority_baseline"]
     grp = df.groupby(["arch", "subset", "lkey", "layer", "probe_type"], as_index=False)
@@ -122,7 +122,7 @@ def main():
     out.to_csv(summary_path, index=False)
     print(f"Wrote {summary_path}  ({len(out)} rows)")
 
-    # ---- 2. trajectory plot ----
+    # 2. trajectory plot
     sub = summary[summary["probe_type"] == args.probe_type]
     fig, axes = plt.subplots(1, len(SUBSETS), figsize=(5.2 * len(SUBSETS), 4.6), sharey=True)
     cmap = plt.get_cmap("tab10")

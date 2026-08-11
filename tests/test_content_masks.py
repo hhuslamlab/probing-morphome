@@ -37,7 +37,7 @@ class TestCharSepContentSymbol:
 
 class TestBuildContentMask:
     def test_encoder_drops_tags_separator_and_specials(self):
-        # vocab: [PAD,BOS,EOS,UNK] + chars(4,5,6=sep) + tags(7,8) -> size 9, nb_attr 2
+        # vocab: [PAD,BOS,EOS,UNK] + chars(4,5,6=sep) + tags(7,8), giving size 9, nb_attr 2
         # seq (len x batch=1): BOS tag7 sep6 char4 char5 EOS
         tokens = torch.tensor([[1], [7], [6], [4], [5], [2]])
         mask = build_content_mask(tokens, "encoder", source_vocab_size=9, nb_attr=2, sep_idx=6)

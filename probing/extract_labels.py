@@ -42,8 +42,8 @@ TENSE_MAP = {"PRS": 0}
 PERSON_MAP = {"1": 0, "2": 1, "3": 2}
 NUMBER_MAP = {"PL": 0, "SG": 1}
 LSHAPED_MAP = {"L": 0, "NL": 1}
-# Diphthongization is the second Spanish morphome (stress-conditioned e->ie,
-# o->ue).  Encoded binary at the lemma level, mirroring l_shaped, so it can
+# Diphthongization is the second Spanish morphome (stress-conditioned e~ie,
+# o~ue).  Encoded binary at the lemma level, mirroring l_shaped, so it can
 # serve as the within-paper replication target in the falsifiability design.
 DIPHTHONG_MAP = {"DIPH": 0, "NODIPH": 1}
 ALTERNATION_MAP = {"none": 0, "s_sk": 1, "n_ng": 2, "c_x": 3, "other_l": 4}
@@ -127,7 +127,7 @@ def build_lshaped_lookup(data_dir):
     with open(nl_path) as f:
         nl_dict = json.load(f)
 
-    lookup = {}  # (tag, normalized_form) -> bool (True = L-shaped)
+    lookup = {}  # keyed by (tag, normalized_form); True = L-shaped
     for lemma_forms in l_dict.values():
         for tag, form in lemma_forms.items():
             lookup[(tag, form.replace(" ", ""))] = True
@@ -320,7 +320,7 @@ def build_alternation_lookup(data_dir):
                 (in_sfs if tag in _L_CELLS else out_sfs).append(sf)
         lemma_alt[lemma] = _classify_alternation(out_sfs, in_sfs)
 
-    # Build (tag, form) -> alternation_class lookup
+    # Build the (tag, form) alternation_class lookup
     lookup = {}
     for lemma, forms in l_dict.items():
         cls = lemma_alt[lemma]

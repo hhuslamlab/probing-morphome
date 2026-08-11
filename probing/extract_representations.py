@@ -271,7 +271,7 @@ def main():
     # All layer activations are accumulated in RAM and written out at the end.
     # Peak usage is ~11 GB for the 43k-sample test set (8 layers x
     # [n, seq, 256] float32).
-    # Key: (layer_type, layer_index) -> list of [batch_size, seq_len, embed_dim] tensors
+    # Keyed by (layer_type, layer_index); values are lists of [batch_size, seq_len, embed_dim] tensors
     batch_reps = {}
     batch_src_masks = []
     batch_trg_masks = []
@@ -312,7 +312,7 @@ def main():
             for key, tensors in reps.items():
                 if key not in batch_reps:
                     batch_reps[key] = []
-                # Each tensor: [seq_len, batch_size, embed_dim] -> [batch_size, seq_len, embed_dim]
+                # Each tensor is transposed from [seq_len, batch_size, embed_dim] to [batch_size, seq_len, embed_dim]
                 for t in tensors:
                     batch_reps[key].append(t.transpose(0, 1))
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# =============================================================================
 # Reproducible pipeline for the probing paper (arXiv:2608.03452). Every stage
 # is idempotent (per-output self-skip), so the script is safe to re-run and to
 # resume after interruption.
@@ -8,7 +7,7 @@
 #   bash reproduce_probing.sh probes assets  # selected stages
 #   ARCHS="vanilla" RUNS="1_2" bash reproduce_probing.sh probes
 #
-# Stages (-> paper section, https://arxiv.org/abs/2608.03452):
+# Stages (paper section, https://arxiv.org/abs/2608.03452):
 #   extract    §3.3   representation extraction         [drive + checkpoints]
 #   pool       §3.3   content-mean pooling              [drive, SEQUENTIAL]
 #   probes     §4.1.1 linear probes + controls          [local cache]
@@ -29,7 +28,6 @@
 # BLAS_THREADS, but lbfgs trajectories differ in the last decimals across
 # thread counts. Keep BLAS_THREADS constant across a sweep you intend to
 # compare bitwise.
-# =============================================================================
 set -u
 cd "$(dirname "$0")" || exit 1
 

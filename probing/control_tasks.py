@@ -25,12 +25,12 @@ from typing import Iterable, Sequence
 import numpy as np
 
 # Per-property control-task structure unit.
-#   "lemma"     -> lemma-level properties (every form of a lemma gets one label)
-#   "tag"       -> tag-level properties (every form realising a given target
+#   "lemma":     lemma-level properties (every form of a lemma gets one label)
+#   "tag":       tag-level properties (every form realising a given target
 #                  tag tuple gets one label)
-#   "src1_tag"  -> level of the first source-position tag
-#   "src2_tag"  -> level of the second source-position tag
-#   "stem"      -> level of the stem-final consonant cluster
+#   "src1_tag":  level of the first source-position tag
+#   "src2_tag":  level of the second source-position tag
+#   "stem":      level of the stem-final consonant cluster
 CONTROL_UNIT = {
     "mood": "tag",
     "tense": "tag",

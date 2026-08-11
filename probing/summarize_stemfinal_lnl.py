@@ -120,7 +120,7 @@ def main():
     df["lkey"] = df.apply(layer_key, axis=1)
     df["layer"] = df.apply(layer_label, axis=1)
 
-    # ---- 1. summary CSV: mean/std over runs ----
+    # 1. summary CSV: mean/std over runs
     metrics = ["accuracy", "majority_baseline"]
     for extra in ("control_accuracy", "selectivity"):
         if extra in df.columns:
@@ -137,7 +137,7 @@ def main():
     out.to_csv(summary_path, index=False)
     print(f"Wrote {summary_path}  ({len(out)} rows)")
 
-    # ---- 2. trajectory plot ----
+    # 2. trajectory plot
     sub = summary[summary["probe_type"] == args.probe_type]
     fig, axes = plt.subplots(1, len(PROPERTIES), figsize=(5.2 * len(PROPERTIES), 4.6), sharey=True)
     cmap = plt.get_cmap("tab10")

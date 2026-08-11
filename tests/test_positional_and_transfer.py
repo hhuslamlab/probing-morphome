@@ -10,7 +10,7 @@ from probing.run_transfer_probe import transfer_score
 
 class TestStemFinalIndex:
     def test_simple_form(self):
-        # salgo -> stem salg- (suffix -o), stem-final consonant ɡ at index 3
+        # salgo has stem salg- (suffix -o), stem-final consonant ɡ at index 3
         assert stem_final_token_index(["s", "a", "l", "ɡ", "o"]) == 3
 
     def test_stress_mark_is_skipped(self):
@@ -19,7 +19,7 @@ class TestStemFinalIndex:
         assert toks[stem_final_token_index(toks)] == "ɡ"
 
     def test_suffixless_form_falls_back_to_whole_form(self):
-        # no known suffix strips -> stem = whole form, last consonant chosen
+        # no known suffix strips, so stem = whole form, last consonant chosen
         toks = ["b", "u", "t"]
         assert toks[stem_final_token_index(toks)] == "t"
 
@@ -102,7 +102,7 @@ class TestPreAlternantIndex:
         # Under teacher forcing the state over input char k predicts char
         # k+1, so the state predicting the stem-final consonant sits at
         # content position sf-1 and has not yet seen it. salgas: tokens
-        # s a l ɡ a s, stem salg-, sf index 3 -> pre-alternant position 2.
+        # s a l ɡ a s, stem salg-, sf index 3, pre-alternant position 2.
         toks = ["s", "a", "l", "ɡ", "a", "s"]
         sf = stem_final_token_index(toks)
         assert toks[sf] == "ɡ"

@@ -200,7 +200,7 @@ class MultiheadAttention(nn.Module):
         v = self.v_proj(value)
 
         def reshape(x, length):
-            # [length, B, C] -> [B*H, length, head_dim]
+            # reshape [length, B, C] to [B*H, length, head_dim]
             return (
                 x.contiguous()
                 .view(length, bsz * self.num_heads, self.head_dim)
@@ -302,7 +302,7 @@ class TransformerEncoder(nn.Module):
             TransformerEncoderLayer(dim, cfg["encoder_ffn_embed_dim"], cfg["encoder_attention_heads"])
             for _ in range(cfg["encoder_layers"])
         )
-        self.layer_norm = nn.LayerNorm(dim)  # normalize_before -> final LN
+        self.layer_norm = nn.LayerNorm(dim)  # normalize_before, so a final LN
         self.register_buffer("version", torch.Tensor([3]))
 
     def forward(self, src_tokens):
@@ -545,7 +545,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
             model(src_tokens, prev_tokens)
 
             for key, tensors in hooks.reps.items():
-                # hook fired once per layer per batch -> tensors holds one [T,B,C]
+                # hook fired once per layer per batch, so tensors holds one [T,B,C]
                 for t in tensors:
                     batch_reps.setdefault(key, []).append(t.transpose(0, 1))  # [B,T,C]
             hooks.clear()

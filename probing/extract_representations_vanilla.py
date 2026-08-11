@@ -252,7 +252,7 @@ class MultiheadAttention(nn.Module):
         v = self.v_proj(value)
 
         def shape(x, length):
-            # [length, batch, embed] -> [batch*heads, length, head_dim]
+            # reshape [length, batch, embed] to [batch*heads, length, head_dim]
             return (
                 x.view(length, bsz * self.num_heads, self.head_dim)
                 .transpose(0, 1)
@@ -351,7 +351,7 @@ class FairseqEncoder(nn.Module):
         self.layers = nn.ModuleList(
             [TransformerEncoderLayer(dim, ffn_dim, heads) for _ in range(n_layers)]
         )
-        self.layer_norm = nn.LayerNorm(dim)  # pre-norm -> final LN present
+        self.layer_norm = nn.LayerNorm(dim)  # pre-norm, so a final LN is present
         self.embed_scale = math.sqrt(dim)
         self.register_buffer("version", torch.tensor([3.0]))
 
@@ -710,7 +710,7 @@ def extract_one(model_dir, model_name, args, device):
             for key, tensors in reps.items():
                 batch_reps.setdefault(key, [])
                 for tensor in tensors:
-                    batch_reps[key].append(tensor.transpose(0, 1))  # [T,B,C]->[B,T,C]
+                    batch_reps[key].append(tensor.transpose(0, 1))  # [T,B,C] to [B,T,C]
             hook_manager.clear()
 
     hook_manager.remove_hooks()

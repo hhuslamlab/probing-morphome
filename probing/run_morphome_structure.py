@@ -123,7 +123,7 @@ def main():
         X = load_layer(cache, layer_type, layer_index)
         cv = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=args.seed)
 
-        # ---- CELL: mood probe trained without 1SG.IND, applied to 1SG.IND ----
+        # CELL: mood probe trained without 1SG.IND, applied to 1SG.IND
         mood_true, mood_pred = [], []
         p_sbjv, side_sbjv, cell_is_L = [], [], []
         for tr, te in cv.split(X, y_mood, groups):
@@ -152,7 +152,7 @@ def main():
                    frac_sbjv_1sgind_NL=float(side_sbjv[~cell_is_L].mean()),
                    n_1sgind_L=int(cell_is_L.sum()), n_1sgind_NL=int((~cell_is_L).sum()))
 
-        # ---- NONAR: L/NL within -er/-ir instances only ----
+        # NONAR: L/NL within -er/-ir instances only
         Xn, yn, gn = X[non_ar], y_lsh[non_ar], groups[non_ar]
         bal = grouped_balanced_cv(Xn, yn, gn, config, n_folds, args.seed)
         ctrls = []

@@ -157,8 +157,8 @@ def probe_subset(X, y, groups, subset_name, layer_type, layer_index, config, rng
         bal = real["test_balanced_accuracy"]
         raw = real["test_accuracy"]
 
-        # Control: permute the lemma->label assignment (structure-preserving),
-        # same protocol -> expected balanced acc ~0.5. Averaged over
+        # Control: permute the lemma-to-label assignment (structure-preserving),
+        # same protocol, so expected balanced acc ~0.5. Averaged over
         # n_controls permutations; degenerate draws (one class) are skipped.
         ctrl_bals = []
         for _ in range(n_controls):

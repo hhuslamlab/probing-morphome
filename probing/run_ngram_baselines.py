@@ -527,7 +527,7 @@ def main():
     seed = config["probe"]["random_seed"]
     rng = np.random.RandomState(seed)
 
-    # ---- Analysis A: full-set accuracy per property (probe-row schema) ----
+    # Analysis A: full-set accuracy per property (probe-row schema)
     logger.info("=== Analysis A: full-set n-gram baselines ===")
     rows_a = []
     for probe_site, texts in views.items():
@@ -555,7 +555,7 @@ def main():
                         )
                     )
 
-    # ---- Analysis B: l_shaped within stem_final_match subsets ----
+    # Analysis B: l_shaped within stem_final_match subsets
     logger.info("=== Analysis B: L/NL within stem-final subsets ===")
     stem_final_match = labels["stem_final_match"]
     l_shaped = labels["l_shaped"]
