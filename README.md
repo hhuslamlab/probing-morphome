@@ -53,3 +53,19 @@ bash reproduce_probing.sh all            # everything, in order
 bash reproduce_probing.sh probes assets  # selected stages
 ```
 
+The `summarize`, `assets`, and `test` stages run out of the box from the
+tracked result CSVs. The extraction stages additionally need the trained
+checkpoints and the training/test data, resolved via `FEATURE_INFORMED_ROOT`
+(training repo root) and `REPS_DIR` (extracted-representations directory).
+
+## Checkpoints
+
+All checkpoints used in the paper (5 architectures × 12 runs, 10L_90NL) are on
+Hugging Face at
+[akki2825/probing-morphome-checkpoints](https://huggingface.co/akki2825/probing-morphome-checkpoints),
+mirroring the layout the pipeline expects:
+
+```bash
+hf download akki2825/probing-morphome-checkpoints --local-dir "$FEATURE_INFORMED_ROOT"
+```
+
