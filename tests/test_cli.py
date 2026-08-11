@@ -1,11 +1,6 @@
-"""docopt CLI regression tests for the converted analysis scripts.
-
-docopt 0.6.2 treats ANY docstring line whose first non-space character is
-``-`` as an option declaration, so a prose or usage-continuation line that
-begins with an option name silently duplicates it and every invocation dies
-with DocoptLanguageError. These tests parse each converted module's
-docstring with representative argv to lock the CLIs in place.
-"""
+"""docopt CLI regression tests: docopt 0.6.2 treats any docstring line whose
+first non-space character is a dash as an option declaration, so a stray prose
+line silently breaks the CLI; these parses lock each module's CLI in place."""
 
 import pytest
 from docopt import docopt

@@ -17,7 +17,6 @@ Options:
 """
 
 import json
-import logging
 import os
 import re
 import sys
@@ -33,8 +32,6 @@ from probing.control_tasks import (
     make_control_labels,
 )
 from probing.utils.cli import parse, standard_sentinels
-
-logger = logging.getLogger("probing.labels")
 
 # Label encodings
 MOOD_MAP = {"IND": 0, "SBJV": 1}
@@ -94,12 +91,7 @@ def parse_args():
 
 
 def build_lemma_lookup(data_dir):
-    """Build (tag, normalized_form) -> lemma string lookup.
-
-    The lemma is the dictionary key under which a given form is stored in the
-    paradigm dicts; we use it as the equivalence unit for lemma-level control
-    tasks (l_shaped, alternation_class, conjugation).
-    """
+    """Build a (tag, normalized_form) to lemma lookup, the equivalence unit for lemma-level control tasks."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -115,11 +107,7 @@ def build_lemma_lookup(data_dir):
 
 
 def build_lshaped_lookup(data_dir):
-    """Build a (tag, normalized_form) -> is_lshaped lookup from both paradigm dicts.
-
-    Labels at the lemma level: a sample is L-shaped if its lemma belongs to an
-    L-shaped paradigm, regardless of which specific cell is being inflected.
-    """
+    """Build a (tag, normalized_form) to is_lshaped lookup (lemma-level)."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -156,13 +144,7 @@ def _get_stem_final(stem):
 
 
 def _segment_form(segment):
-    """Extract the normalized (space-free) IPA form from one src segment.
-
-    Source segments interleave the IPA characters with the morphological tag,
-    e.g. "s u p e ɾ b e n ɡ ˈ a m o s V SBJV PRS 1 PL".  IPA glyphs/diacritics
-    are lowercase; tag tokens are uppercase or digits, so the form is every
-    token up to the first tag token.
-    """
+    """Extract the space-free IPA form from one src segment (tokens up to the first uppercase/digit tag token)."""
     form_toks = []
     for tok in segment.split():
         if tok.isupper() or tok.isdigit():
@@ -172,26 +154,12 @@ def _segment_form(segment):
 
 
 def _form_stem_final(form):
-    """Stem-final consonant cluster of a normalized (space-free) form.
-
-    Mirrors the fallback in _diphthongizes: if no known inflectional suffix
-    strips, use the whole form, so the result is always a (possibly empty)
-    string rather than None.
-    """
+    """Stem-final consonant cluster of a normalized form (falls back to the whole form, so never None)."""
     return _get_stem_final(_get_stem(form) or form)
 
 
 def stemfinal_match_label(src_line, tgt_line):
-    """Per-sample binary label: do the forms in one inflection instance share
-    the same stem-final consonant cluster?
-
-    The instance's forms are the source form(s) in the .src line plus the
-    target form in the .tgt line -- the "three forms" in the dual-source setup
-    (src1, src2, target).  Returns STEMFINAL_MATCH_MAP['same'] (0) if all share
-    one stem-final cluster, else ['differ'] (1).  Generalizes to any number of
-    source forms; the last " # "-delimited src field is the target tag, not a
-    form, and is dropped.
-    """
+    """Binary per-sample label: do all forms in one inflection instance share the same stem-final cluster?"""
     *src_segments, _target_tag = src_line.split(" # ")
     stem_finals = [_form_stem_final(_segment_form(seg)) for seg in src_segments]
     stem_finals.append(_form_stem_final(tgt_line.replace(" ", "")))
@@ -223,7 +191,7 @@ _ARRHIZO_TAGS = ("V;IND;PRS;1;PL", "V;IND;PRS;2;PL")
 
 
 def _diphthongizes(rhizo_form, arrhizo_form):
-    """True if the lemma shows stress-conditioned e->ie / o->ue diphthongization."""
+    """True if the lemma shows stress-conditioned e~ie / o~ue diphthongization."""
     if not rhizo_form or not arrhizo_form:
         return False
     r_norm = rhizo_form.replace(" ", "")
@@ -234,12 +202,7 @@ def _diphthongizes(rhizo_form, arrhizo_form):
 
 
 def build_diphthong_lookup(data_dir):
-    """Build a (tag, normalized_form) -> is_diphthongizing lookup (lemma-level).
-
-    Returns (lookup, n_diphthong_lemmas, example_lemmas).  The label is a
-    binary morphome flag mirroring l_shaped; example_lemmas is a small sample
-    of detected diphthongizers for sanity-checking the (heuristic) detector.
-    """
+    """Build a (tag, normalized_form) to is_diphthongizing lookup; returns (lookup, n_diphthong_lemmas, example_lemmas)."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -264,15 +227,7 @@ def build_diphthong_lookup(data_dir):
 
 
 def _classify_alternation(out_sfs, in_sfs):
-    """Classify the consonant alternation type from stem-final consonants.
-
-    Args:
-        out_sfs: stem-final consonants from out-of-L cells
-        in_sfs: stem-final consonants from in-L cells
-
-    Returns:
-        One of: 'none', 's_sk', 'n_ng', 'c_x', 'other_l'
-    """
+    """Classify the alternation type ('none', 's_sk', 'n_ng', 'c_x', 'other_l') from stem-final consonants."""
     if not out_sfs or not in_sfs:
         return "none"
     out_sf = Counter(out_sfs).most_common(1)[0][0]
@@ -290,19 +245,7 @@ def _classify_alternation(out_sfs, in_sfs):
 
 
 def build_alternation_lookup(data_dir):
-    """Build a (tag, normalized_form) -> alternation_class lookup.
-
-    For each L-shaped lemma, determines the consonant alternation type by
-    comparing stem-final consonants in in-L vs out-of-L paradigm cells.
-    Non-L-shaped lemmas are labeled 'none'.
-
-    Classes:
-        none    - no consonant alternation (NL lemmas, or L with vowel-only alternation)
-        s_sk    - s→sk velar insertion (141 lemmas)
-        n_ng    - n→nɡ velar insertion (53 lemmas)
-        c_x     - ç→x backing (49 lemmas)
-        other_l - other rare consonant alternations (36 lemmas)
-    """
+    """Build a (tag, normalized_form) to alternation_class lookup; returns (lookup, class_counts)."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -335,11 +278,7 @@ def build_alternation_lookup(data_dir):
 
 
 def _get_conjugation_class(lemma):
-    """Determine conjugation class (-ar/-er/-ir) from lemma string.
-
-    Lemma is a space-separated IPA string ending in 'ɾ'. The vowel before
-    the final 'ɾ' determines the class.
-    """
+    """Determine conjugation class (ar/er/ir) from the lemma's infinitive ending."""
     clean = lemma.replace(" ", "").replace("\u02c8", "")  # strip spaces + stress
     if clean.endswith("a\u027e") or clean.endswith("a\u0072"):  # aɾ or ar
         return "ar"
@@ -351,14 +290,7 @@ def _get_conjugation_class(lemma):
 
 
 def build_stem_final_lookup(data_dir):
-    """Build (tag, normalized_form) -> stem_final consonant cluster lookup.
-
-    Used both as a probe target and — more importantly — as a *phonological
-    control* for the morphome question: after residualising the
-    representations against stem_final, can we still decode L-shape /
-    alternation class / conjugation?  If yes, those features are encoded
-    above and beyond their surface phonological correlates.
-    """
+    """Build a (tag, normalized_form) to stem_final class id lookup; returns (lookup, class_map)."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -380,11 +312,7 @@ def build_stem_final_lookup(data_dir):
 
 
 def build_conjugation_lookup(data_dir):
-    """Build a (tag, normalized_form) -> conjugation_class lookup.
-
-    Determines the conjugation class (-ar, -er, -ir) from each lemma's
-    infinitive ending, then maps all forms of that lemma to the class.
-    """
+    """Build a (tag, normalized_form) to conjugation_class lookup; returns (lookup, class_counts)."""
     l_path = os.path.join(data_dir, "ipa_clean_lshaped_dict.json")
     nl_path = os.path.join(data_dir, "ipa_clean_non_lshaped_dict.json")
     with open(l_path) as f:
@@ -422,20 +350,19 @@ _TAG_RE = re.compile(r"<([^>]+)>$")
 
 
 def extract_source_tag(form_tag_str):
-    """Extract the tag from a 'form <tag>' string like 's u p e ɾ ... <V;SBJV;PRS;1;PL>'."""
+    """Extract the trailing '<tag>' from a 'form <tag>' string."""
     m = _TAG_RE.search(form_tag_str)
     if m:
         return "<" + m.group(1) + ">"
     return None
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     output_path = os.path.join(args.output_dir, f"{args.split}_{args.run}_labels.pt")
     if os.path.exists(output_path):
-        logger.info("Skipping %s_%s -- labels already extracted", args.split, args.run)
+        print(f"Skipping {args.split}_{args.run} -- labels already extracted")
         sys.exit(EXIT_SKIPPED)
 
     run_num = args.run.split("_")[0]
@@ -449,37 +376,21 @@ def main():
 
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            logger.error("Missing file: %s", path)
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"Missing file: {path}")
 
     lshaped_lookup, n_l_lemmas, n_nl_lemmas = build_lshaped_lookup(args.data_dir)
-    logger.info(
-        "Built L-shaped lookup: %d L lemmas, %d NL lemmas, %d (tag, form) entries",
-        n_l_lemmas, n_nl_lemmas, len(lshaped_lookup),
-    )
 
     diphthong_lookup, n_diph_lemmas, diph_examples = build_diphthong_lookup(args.data_dir)
-    logger.info(
-        "Built diphthongization lookup: %d diphthongizing lemmas detected; examples: %s",
-        n_diph_lemmas, diph_examples,
-    )
 
     alternation_lookup, alt_class_counts = build_alternation_lookup(args.data_dir)
-    logger.info("Alternation classes (L-shaped lemmas): %s", dict(alt_class_counts))
 
     conjugation_lookup, conj_class_counts = build_conjugation_lookup(args.data_dir)
-    logger.info("Conjugation classes: %s", dict(conj_class_counts))
 
     # Used for control-task equivalence units.
     lemma_lookup = build_lemma_lookup(args.data_dir)
-    logger.info("Built lemma lookup: %d (tag, form) entries", len(lemma_lookup))
 
     # Phonological control for the morphome probe.
     stem_final_lookup, stem_final_class_map = build_stem_final_lookup(args.data_dir)
-    logger.info(
-        "Built stem_final lookup: %d classes, %d (tag, form) entries",
-        len(stem_final_class_map), len(stem_final_lookup),
-    )
 
     with open(src_path) as f:
         src_lines = [line.strip() for line in f]
@@ -487,13 +398,9 @@ def main():
         tgt_lines = [line.strip() for line in f]
 
     if len(src_lines) != len(tgt_lines):
-        logger.error(
-            "Line count mismatch: %d src vs %d tgt", len(src_lines), len(tgt_lines)
-        )
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Line count mismatch: {len(src_lines)} src vs {len(tgt_lines)} tgt")
 
     n_samples = len(src_lines)
-    logger.info("Processing %d samples from %s", n_samples, model_name)
 
     labels = {prop: [] for prop in PROPERTIES}
 
@@ -523,17 +430,13 @@ def main():
             value = tag_fields[prop]
             encoding_map = LABEL_ENCODINGS[prop]
             if value not in encoding_map:
-                logger.error(
-                    "Unknown %s value '%s' at line %d", prop, value, i + 1
-                )
-                sys.exit(EXIT_ERROR)
+                sys.exit(f"Unknown {prop} value '{value}' at line {i + 1}")
             labels[prop].append(encoding_map[value])
 
         # Source-position probes (primacy/recency bias)
         for src_idx, src_fields in [("src1", src1_fields), ("src2", src2_fields)]:
             if src_fields is None:
-                logger.error("Could not parse %s tag at line %d", src_idx, i + 1)
-                sys.exit(EXIT_ERROR)
+                sys.exit(f"Could not parse {src_idx} tag at line {i + 1}")
             labels[f"{src_idx}_mood"].append(MOOD_MAP[src_fields["mood"]])
             labels[f"{src_idx}_person"].append(PERSON_MAP[src_fields["person"]])
 
@@ -545,7 +448,7 @@ def main():
             is_l = lshaped_lookup[key]
             labels["l_shaped"].append(LSHAPED_MAP["L"] if is_l else LSHAPED_MAP["NL"])
         else:
-            logger.warning("No lemma match for (tag=%s, form=%s) at line %d", target_tag_bare, normalized_form, i + 1)
+            print(f"WARNING: No lemma match for (tag={target_tag_bare}, form={normalized_form}) at line {i + 1}", file=sys.stderr)
             labels["l_shaped"].append(LSHAPED_MAP["NL"])
 
         # Diphthongization (lemma-level, binary) — the second morphome
@@ -606,9 +509,7 @@ def main():
     for prop in PROPERTIES:
         unique, counts = label_tensors[prop].unique(return_counts=True)
         dist = dict(zip(unique.tolist(), counts.tolist()))
-        logger.info("  %s: %s", prop, dist)
 
-    logger.info("Saved labels to %s (%d samples)", output_path, n_samples)
 
     # Control-task labels (Hewitt & Liang 2019).  Each property gets a
     # structure-preserving deterministic random label.  Selectivity is then
@@ -617,13 +518,11 @@ def main():
         control_tensors = {}
         for prop in PROPERTIES:
             if prop not in CONTROL_UNIT:
-                logger.warning(
-                    "No control-task unit registered for %s — skipping", prop
-                )
+                print(f"WARNING: No control-task unit registered for {prop} — skipping", file=sys.stderr)
                 continue
             real = label_tensors[prop].numpy()
             if len(np.unique(real)) < 2:
-                logger.info("  Skipping control-task for %s (single class)", prop)
+                print(f"  Skipping control-task for {prop} (single class)")
                 continue
             unit_seq = build_units(
                 prop,
@@ -636,10 +535,6 @@ def main():
             ctrl = make_control_labels(unit_seq, real, salt=f"{args.control_salt}::{prop}")
             control_tensors[prop] = torch.from_numpy(ctrl).long()
             n_unique_units = len(set(unit_seq))
-            logger.info(
-                "  control_task[%s]: %d unique %s units -> %d labels",
-                prop, n_unique_units, CONTROL_UNIT[prop], len(ctrl),
-            )
 
         control_path = os.path.join(
             args.output_dir, f"{args.split}_{args.run}_control_labels.pt"
@@ -654,10 +549,5 @@ def main():
             },
             control_path,
         )
-        logger.info("Saved control-task labels to %s", control_path)
 
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

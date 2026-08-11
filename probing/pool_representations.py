@@ -1,19 +1,9 @@
 """Pool per-layer representations once and cache the result locally.
 
-The full [n_samples, seq_len, embed_dim] representation tensors live on a slow
-external drive (~0.8-1.7 GB per layer), but every probe script immediately
-reduces them to a [n_samples, embed_dim] pooled matrix (~44 MB).  This script
-does that reduction in one sequential pass per layer -- one read of each .pt
-off the drive -- and saves the pooled float32 matrix as
-``<cache-dir>/<model_type>/<split>_<run>/<layer_type>_layer_<i>_<pool_positions>.npy``
-plus a copy of ``metadata.json``, so downstream probing never touches the
-external drive again.
-
-Pooling reuses load_pool_mask/pool_reps unchanged but runs in chunks along the
-sample dimension to cap peak RAM (mean_pool materialises a full-size broadcast
-temp otherwise); both poolers are row-independent, so chunking is bit-identical.
-Writes are atomic (tmp file + os.replace) and per-layer idempotent, so an
-interrupted run resumes where it left off.
+Reduces each [n_samples, seq_len, embed_dim] layer tensor on the slow external
+drive to a pooled [n_samples, embed_dim] .npy under <cache-dir>, so downstream
+probing never touches the drive again. Chunked pooling is bit-identical to one
+unchunked pool_reps call; writes are atomic and per-layer idempotent.
 
 Usage:
   pool_representations.py --model-type TYPE --split SPLIT --run RUN
@@ -36,7 +26,6 @@ Options:
 """
 
 import json
-import logging
 import os
 import shutil
 import sys
@@ -47,8 +36,6 @@ import torch
 from probing import EXIT_ERROR, EXIT_SUCCESS, MODEL_TYPES, SPLITS
 from probing.utils.cli import parse
 from probing.utils.content_mask import load_pool_mask, pool_reps
-
-logger = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -67,15 +54,13 @@ def pool_in_chunks(reps, mask, pool_positions, chunk_size):
     return torch.cat(chunks, dim=0)
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     metadata_path = os.path.join(reps_dir, "metadata.json")
     if not os.path.exists(metadata_path):
-        logger.error("Representations not found: %s", reps_dir)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Representations not found: {reps_dir}")
 
     with open(metadata_path) as f:
         metadata = json.load(f)
@@ -101,12 +86,10 @@ def main():
 
         rep_path = os.path.join(reps_dir, f"{base}.pt")
         if not os.path.exists(rep_path):
-            logger.error("Missing rep file: %s", rep_path)
-            sys.exit(EXIT_ERROR)
-        mask = load_pool_mask(reps_dir, layer_type, layer_index, args.pool_positions, logger=logger)
+            sys.exit(f"Missing rep file: {rep_path}")
+        mask = load_pool_mask(reps_dir, layer_type, layer_index, args.pool_positions)
         if mask is None:
-            logger.error("Missing mask file for %s in %s", base, reps_dir)
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"Missing mask file for {base} in {reps_dir}")
 
         reps = torch.load(rep_path, weights_only=False)
         pooled = pool_in_chunks(reps, mask, args.pool_positions, args.chunk_size).numpy()
@@ -118,18 +101,5 @@ def main():
         np.save(tmp_path, pooled)
         os.replace(tmp_path, out_path)
         n_pooled += 1
-        logger.info("Pooled %s -> %s %s", base, out_path, pooled.shape)
 
-    logger.info(
-        "%s/%s_%s: pooled %d layers, %d already cached",
-        args.model_type,
-        args.split,
-        args.run,
-        n_pooled,
-        n_skipped,
-    )
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

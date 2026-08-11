@@ -1,14 +1,8 @@
 """Aggregate + plot the stem-final-match / conjugation / L-NL probe results.
 
 Reads the per-(arch, run) CSVs written by run_probes_stemfinal_lnl.py and
-produces:
-
-  1. summary_<split>.csv -- one row per (arch, layer, property, probe_type)
-     with accuracy / majority baseline MEAN and STD across the runs (the std
-     is the cross-test-set spread).
-  2. trajectory_<split>_<probe_type>.png -- accuracy-by-layer trajectories,
-     one panel per property, one line per architecture (shaded +/- run std),
-     with the mean majority baseline marked per panel.
+writes summary_<split>.csv (mean/std across runs) plus accuracy-by-layer
+trajectory plots, one panel per property, with baselines marked.
 
 Usage:
   summarize_stemfinal_lnl.py [--results-dir DIR] [--split SPLIT]
@@ -79,13 +73,7 @@ def load_all(results_dir):
 
 
 def load_baselines(baselines_dir):
-    """Load surface n-gram baseline CSVs (run_ngram_baselines.py), or None.
-
-    Aggregated separately from the probe frame: baseline rows have
-    layer_type='ngram' and layer_index=n-gram order, which layer_key cannot
-    place on the encoder/decoder axis. The pseudo-arch subdirectory name
-    ('ngram', 'infinigram') becomes the arch column.
-    """
+    """Load surface n-gram baseline summary rows, or None (layer_index is the n-gram order)."""
     frames = []
     for f in sorted(glob.glob(os.path.join(baselines_dir, "*", "*_stemfinal_lnl_results.csv"))):
         df = pd.read_csv(f)
@@ -113,7 +101,7 @@ def parse_args():
     return parse(__doc__, choices=dict(probe_type=("linear", "mlp")))
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
 
     df = load_all(args.results_dir)
@@ -189,7 +177,3 @@ def main():
     png_path = os.path.join(args.results_dir, f"trajectory_{args.split}_{args.probe_type}.png")
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     print(f"Wrote {png_path}")
-
-
-if __name__ == "__main__":
-    main()

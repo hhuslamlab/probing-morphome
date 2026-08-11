@@ -1,23 +1,11 @@
-"""Cross-subset transfer probe: does ONE L/NL representation span both regimes?
+"""Cross-subset transfer probe: does one L/NL representation span both regimes?
 
-Trains the L-vs-NL probe on instances where the stem alternation is VISIBLE
-(stem_final_match = differ) and evaluates on instances of HELD-OUT lemmas
-where it is NOT (stem_final_match = same), and vice versa. If the decision
-direction learned from alternation-visible instances transfers to
-no-alternation instances of unseen lemmas, the model carries a single
-morphome representation rather than separate "alternation seen" and "lexeme
-class" codes.
-
-Protocol matches the main probes: pooled content vectors from the local
-cache, linear probe (scaler + logistic regression), 5-fold lemma-disjoint
-StratifiedGroupKFold over the FULL instance set; per fold, the probe is fit
-on the train-lemma instances of the SOURCE subset and scored on the
-test-lemma instances of the TARGET subset. Balanced accuracy over the pooled
-out-of-fold predictions; control = lemma-level label-assignment permutation
-averaged over --n-controls draws.
-
-Output: <output-dir>/<model_type>/<split>_<run>_transfer.csv
-Exit codes: 0 ok, 1 error, 2 skipped.
+Trains the L-vs-NL probe on instances where the stem alternation is visible
+(stem_final_match differ) and evaluates on held-out-lemma instances where it
+is not (stem_final_match same), and vice versa; transfer of the decision
+direction would indicate a single morphome representation. The metric is
+balanced accuracy over pooled out-of-fold predictions, and folds are
+lemma-disjoint to prevent lemma memorization.
 
 Usage:
   run_transfer_probe.py --model-type TYPE --split SPLIT --run RUN
@@ -51,13 +39,10 @@ from probing.analysis_common import (
     load_labels_and_groups,
     load_layer,
     output_path_or_skip,
-    setup_logging,
     write_rows,
 )
 from probing.run_probes_stemfinal_lnl import build_probe, load_config, shuffle_labels_by_group
 from probing.utils.cli import parse, standard_sentinels
-
-logger = setup_logging(__name__)
 
 DIRECTIONS = (("differ", "same"), ("same", "differ"))
 
@@ -69,8 +54,8 @@ def parse_args():
 
 
 def transfer_score(X, y, groups, src_mask, tgt_mask, probe, n_folds, seed):
-    """Out-of-fold transfer predictions: fit on train-lemmas of the source
-    subset, predict test-lemmas of the target subset."""
+    """Fit on train-lemma instances of the source subset, score on test-lemma
+    instances of the target subset."""
     cv = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     y_true, y_pred = [], []
     for tr, te in cv.split(X, y, groups):
@@ -87,10 +72,10 @@ def transfer_score(X, y, groups, src_mask, tgt_mask, probe, n_folds, seed):
     return balanced_accuracy_score(np.concatenate(y_true), np.concatenate(y_pred))
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
     out_path = output_path_or_skip(args.output_dir, args.model_type,
-                                   f"{args.split}_{args.run}_transfer.csv", logger)
+                                   f"{args.split}_{args.run}_transfer.csv")
 
     config = load_config(args.config)
     labels, groups = load_labels_and_groups(args.data_dir, args.split, args.run)
@@ -122,12 +107,6 @@ def main():
                 control_balanced_accuracy=ctrl, selectivity=bal - ctrl,
                 n_controls=len(ctrls),
             ))
-            logger.info("%s_%d | %s->%s: bal=%.4f ctrl=%.4f sel=%+.4f",
-                        layer_type, layer_index, src, tgt, bal, ctrl, bal - ctrl)
 
-    write_rows(out_path, rows, logger)
+    write_rows(out_path, rows)
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

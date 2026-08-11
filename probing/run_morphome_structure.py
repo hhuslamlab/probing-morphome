@@ -1,30 +1,11 @@
 """Morphome-structure probes: cell clustering and L/NL within non-ar verbs.
 
-Two analyses addressing the structural half of the morphome question, run on
-the content-pooled cache at the layers where morphomic information peaks
-(enc3, dec1, dec2).
-
-Analysis CELL -- does 1SG.IND cluster with the subjunctive?
-  A linear mood probe (IND vs SBJV) is trained on all target cells EXCEPT
-  1SG.IND, then applied to held-out-lemma 1SG.IND instances. If the model
-  represents the morphomic organization, 1SG.IND instances of L-SHAPED verbs
-  should fall on the subjunctive side of the mood boundary more often than
-  those of NL-shaped verbs, for which 1SG.IND is an ordinary indicative cell.
-  Reported per layer: mood balanced accuracy on non-1SG.IND cells (sanity),
-  and mean P(SBJV) / fraction classified SBJV for 1SG.IND instances, split by
-  lemma class.
-
-Analysis NONAR -- is L/NL decodable within non-ar verbs?
-  L-shaped verbs are all -er/-ir, so conjugation one-directionally predicts
-  NL and a probe direction aligned with the model's conjugation encoding
-  inherits L/NL signal for free. The transparent control is to restrict the
-  probe to non-ar instances, where the shortcut is unavailable: the L/NL
-  probe is trained and evaluated (lemma-disjoint folds, balanced accuracy,
-  lemma-permutation control) on -er/-ir instances only. Decodability in this
-  subset cannot be explained by conjugation-as-proxy.
-
-Output: <output-dir>/<model_type>/<split>_<run>_structure.csv
-Exit codes: 0 ok, 1 error, 2 skipped.
+Analysis CELL trains a mood probe (IND vs SBJV) on all cells except 1SG.IND
+and asks whether held-out-lemma 1SG.IND instances of L-shaped verbs fall on
+the subjunctive side more often than those of NL verbs. Analysis NONAR probes
+L/NL within -er/-ir instances only, where conjugation cannot act as a proxy
+for L/NL. The metric is balanced accuracy and folds are lemma-disjoint to
+prevent lemma memorization.
 
 Usage:
   run_morphome_structure.py --model-type TYPE --split SPLIT --run RUN
@@ -58,7 +39,6 @@ from probing.analysis_common import (
     load_labels_and_groups,
     load_layer,
     output_path_or_skip,
-    setup_logging,
     write_rows,
 )
 from probing.extract_labels import _L_CELLS
@@ -69,8 +49,6 @@ from probing.run_probes_stemfinal_lnl import (
     shuffle_labels_by_group,
 )
 from probing.utils.cli import parse, standard_sentinels
-
-logger = setup_logging(__name__)
 
 LAYERS = [("encoder", 3), ("decoder", 1), ("decoder", 2)]
 ONE_SG_IND = "V;IND;PRS;1;SG"
@@ -97,10 +75,10 @@ def grouped_balanced_cv(X, y, groups, config, n_folds, seed):
     return float(res["test_balanced_accuracy"].mean())
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
     out_path = output_path_or_skip(args.output_dir, args.model_type,
-                                   f"{args.split}_{args.run}_structure.csv", logger)
+                                   f"{args.split}_{args.run}_structure.csv")
 
     config = load_config(args.config)
     labels, groups = load_labels_and_groups(args.data_dir, args.split, args.run)
@@ -171,15 +149,6 @@ def main():
             n_nonar_NL_lemmas=len(np.unique(gn[yn != l_code])),
         )
         rows.append(row)
-        logger.info("%s_%d | mood=%.3f P(SBJV|1sgind) L=%.3f NL=%.3f | "
-                    "lsh-nonar=%.3f ctrl=%.3f sel=%+.3f",
-                    layer_type, layer_index, mood_bal,
-                    row["p_sbjv_1sgind_L"], row["p_sbjv_1sgind_NL"],
-                    bal, ctrl, bal - ctrl)
 
-    write_rows(out_path, rows, logger)
+    write_rows(out_path, rows)
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

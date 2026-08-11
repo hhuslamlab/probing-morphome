@@ -1,38 +1,11 @@
-"""Extract hidden-state representations from the *char_sep* (fairseq) models.
+"""Extract hidden-state representations from the char_sep (fairseq) models.
 
-The character-separated models in ``checkpoints/char_sep/seperate_char_checkpoints/``
-were trained with **fairseq** (``arch=transformer``, ``task=translation``), not
-with the in-house ``transformer.Transformer`` used by the other five model types.
-``extract_representations.py`` therefore cannot load them — fairseq checkpoints
-store a plain ``state_dict`` under ``ckpt["model"]`` whose parameter names
-(``encoder.layers.N.self_attn.k_proj.*``) belong to fairseq's
-``TransformerEncoder``/``TransformerDecoder``.
-
-This script re-implements that exact architecture in pure PyTorch (no fairseq
-dependency) so the same checkpoints can be run forward and hooked.  Output is
-written in the **same layout** as ``extract_representations.py`` so every
-downstream pooling and probe script works unchanged:
-
-    data/probing/representations/<model-type>/<split>_<run>/
-        encoder_layer_{i}.pt          [n_samples, src_seq_len, embed_dim]
-        encoder_layer_{i}_mask.pt     [n_samples, src_seq_len]   (padding mask)
-        encoder_layer_{i}_content_mask.pt
-        decoder_layer_{i}.pt          [n_samples, trg_seq_len, embed_dim]
-        decoder_layer_{i}_mask.pt
-        decoder_layer_{i}_content_mask.pt
-        metadata.json
-
-Tokenisation MUST match training: the script reads the fairseq dictionaries
-(``dict.<run>.src.txt`` / ``dict.<run>.tgt.txt``) produced by ``fairseq-preprocess``
-and a hard assertion verifies their size equals the checkpoint's embedding rows
-(40 source / 32 target for these models) — a mismatched dictionary silently
-produces garbage vectors, so we refuse to run on one.
-
-The ``--data-bin`` / ``--data-root`` paths point at the fairseq data directory
-referenced by the checkpoint's ``args.data`` (e.g. ``seperate_char/<split>_<run>``).
-Each per-run directory must contain ``dict.<run>.src.txt``, ``dict.<run>.tgt.txt``
-and the raw whitespace-tokenised test files ``test.<run>.src`` / ``test.<run>.tgt``
-(override the latter with ``--test-src`` / ``--test-tgt`` if they live elsewhere).
+The char_sep checkpoints are fairseq ``transformer`` state_dicts, not the
+pickled in-house ``transformer.Transformer`` objects, so this script rebuilds
+that architecture in pure PyTorch (fairseq is deliberately not a dependency).
+Output layout is identical to ``extract_representations.py``, so downstream
+scripts run unchanged.  The fairseq dictionaries must match the checkpoint's
+embedding sizes; a mismatch aborts rather than emit garbage vectors.
 
 Usage:
   extract_representations_char_sep.py --checkpoint FILE --data-bin DIR
@@ -63,7 +36,6 @@ Options:
 
 import glob
 import json
-import logging
 import math
 import os
 import re
@@ -76,8 +48,6 @@ from torch import nn
 from probing import EXIT_SUCCESS, EXIT_ERROR, EXIT_SKIPPED, FEATURE_INFORMED_ROOT
 from probing.utils.cli import parse, standard_sentinels
 
-logger = logging.getLogger("probing.extract_char_sep")
-
 # fairseq Dictionary fixed special-token ids (Dictionary.__init__ adds them in
 # this order): <s>=bos, <pad>, </s>=eos, <unk>.
 BOS_IDX, PAD_IDX, EOS_IDX, UNK_IDX = 0, 1, 2, 3
@@ -86,13 +56,7 @@ _SPECIALS = ("<s>", "<pad>", "</s>", "<unk>")
 
 # fairseq dictionary + tokenisation
 def load_fairseq_dict(path):
-    """Load a fairseq ``dict.*.txt`` into (symbols, sym2idx).
-
-    The four special symbols are implicit (added in __init__, never written to
-    the file); the file lists the remaining symbols — including the trailing
-    ``madeupwordNNNN`` padding entries — one ``"<symbol> <count>"`` per line, in
-    id order starting at 4.
-    """
+    """Load a fairseq ``dict.*.txt`` into (symbols, sym2idx); the four specials are implicit at indices 0 to 3."""
     symbols = list(_SPECIALS)
     sym2idx = {s: i for i, s in enumerate(symbols)}
     with open(path, encoding="utf-8") as fh:
@@ -117,19 +81,7 @@ def encode_line(line, sym2idx, append_eos=True):
 
 
 def is_content_symbol(sym, side):
-    """A *content* position carries an output character, not a tag/separator/special.
-
-    The character_separated encoder input decomposes each morphosyntactic tag
-    into bare uppercase/digit tokens (``V SBJV PRS 1 PL``), with ``#``
-    separating the exemplar pairs; only the lowercase IPA characters are
-    content. (Bracketed ``<TAG>`` tokens are also excluded for safety, though
-    this vocabulary does not contain them.) The decoder target is
-    ``char ... </s>`` — every non-special token is content.
-
-    Excluding only bracketed tags would silently INCLUDE the decomposed tag
-    tokens here, since this vocabulary has no bracketed forms — the uppercase/
-    digit checks are what actually filter the tags.
-    """
+    """True if sym is an IPA character (encoder side also drops '#', uppercase/digit tag tokens, and '<'-prefixed tokens)."""
     if sym in _SPECIALS:
         return False
     if side == "encoder":
@@ -152,8 +104,7 @@ def sinusoidal_table(num_embeddings, embedding_dim, padding_idx):
 
 
 def make_positions(tokens, padding_idx):
-    """fairseq utils.make_positions: non-pad tokens get consecutive positions
-    starting at padding_idx+1, independent of which side is padded."""
+    """fairseq utils.make_positions: non-pad tokens get consecutive positions starting at padding_idx+1."""
     mask = tokens.ne(padding_idx).int()
     return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
 
@@ -176,8 +127,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
 
 
 class MultiheadAttention(nn.Module):
-    """fairseq MultiheadAttention: separate q/k/v projections, q scaled by
-    head_dim**-0.5, additive key-padding + attention masks."""
+    """fairseq MultiheadAttention (separate q/k/v projections, q scaled by head_dim**-0.5)."""
 
     def __init__(self, embed_dim, num_heads):
         super().__init__()
@@ -462,7 +412,7 @@ def pad_and_concatenate(tensor_list, pad_dim=1):
 
 # per-model extraction
 def parse_split_run(model_dir):
-    """``10L_90NL_1_1-models`` -> ('10L_90NL', '1_1')."""
+    """``10L_90NL_1_1-models`` gives ('10L_90NL', '1_1')."""
     name = os.path.basename(model_dir.rstrip("/"))
     m = re.match(r"^(\d+L_\d+NL)_(\d+_\d+)-models$", name)
     if not m:
@@ -484,7 +434,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     tgt_dict_path = os.path.join(data_bin, f"dict.{run}.tgt.txt")
     for p in (src_dict_path, tgt_dict_path, test_src, test_tgt):
         if not os.path.exists(p):
-            logger.error("Missing required file: %s", p)
+            print(f"Missing required file: {p}", file=sys.stderr)
             return EXIT_ERROR
 
     src_symbols, src_sym2idx = load_fairseq_dict(src_dict_path)
@@ -497,25 +447,19 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     # Correctness gate: a dictionary that does not match the embedding table
     # would map characters to the wrong rows and yield meaningless vectors.
     if len(src_symbols) != src_rows_dim or len(tgt_symbols) != tgt_rows_dim:
-        logger.error(
-            "Dictionary/checkpoint vocab mismatch for run %s: "
-            "src dict=%d vs embed=%d, tgt dict=%d vs embed=%d. "
-            "Point --data-bin at the matching seperate_char data directory.",
-            run, len(src_symbols), src_rows_dim, len(tgt_symbols), tgt_rows_dim,
-        )
+        print(f"Dictionary/checkpoint vocab mismatch for run {run}: src dict={len(src_symbols)} vs embed={src_rows_dim}, tgt dict={len(tgt_symbols)} vs embed={tgt_rows_dim}. Point --data-bin at the matching seperate_char data directory.", file=sys.stderr)
         return EXIT_ERROR
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model_from_checkpoint(ckpt, len(src_symbols), len(tgt_symbols))
     model.to(device).eval()
-    logger.info("Loaded char_sep model %s (device=%s)", checkpoint, device)
 
     with open(test_src, encoding="utf-8") as fh:
         src_lines = [ln.rstrip("\n") for ln in fh]
     with open(test_tgt, encoding="utf-8") as fh:
         tgt_lines = [ln.rstrip("\n") for ln in fh]
     if len(src_lines) != len(tgt_lines):
-        logger.error("test src/tgt length mismatch: %d vs %d", len(src_lines), len(tgt_lines))
+        print(f"test src/tgt length mismatch: {len(src_lines)} vs {len(tgt_lines)}", file=sys.stderr)
         return EXIT_ERROR
 
     src_encoded = [encode_line(ln, src_sym2idx) for ln in src_lines]
@@ -553,7 +497,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     hooks.remove()
 
     if not batch_reps:
-        logger.error("No representations collected for run %s", run)
+        print(f"No representations collected for run {run}", file=sys.stderr)
         return EXIT_ERROR
 
     os.makedirs(output_path, exist_ok=True)
@@ -574,7 +518,6 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
         torch.save(mask, os.path.join(output_path, f"{layer_type}_layer_{idx}_mask.pt"))
         torch.save(content, os.path.join(output_path, f"{layer_type}_layer_{idx}_content_mask.pt"))
 
-        logger.info("Saved %s_layer_%d: %s", layer_type, idx, list(rep.shape))
         if layer_type == "encoder":
             n_enc += 1
         else:
@@ -598,10 +541,6 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     with open(os.path.join(output_path, "metadata.json"), "w") as fh:
         json.dump(metadata, fh, indent=2)
 
-    logger.info(
-        "Extraction complete for %s: %d samples, %d enc + %d dec layers, embed_dim=%d",
-        run, metadata["n_samples"], n_enc, n_dec, embed_dim,
-    )
     return EXIT_SUCCESS
 
 
@@ -620,19 +559,17 @@ def default_test_files(data_bin, run, test_src, test_tgt):
     )
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     if args.all:
         if not args.data_root:
-            logger.error("--all requires --data-root")
-            sys.exit(EXIT_ERROR)
+            sys.exit("--all requires --data-root")
         model_dirs = sorted(glob.glob(os.path.join(args.checkpoint_root, "*-models")))
         skipped = [d for d in model_dirs if d.endswith("_old") or d.endswith("_bk")]
         model_dirs = [d for d in model_dirs if not (d.endswith("_old") or d.endswith("_bk"))]
         for d in skipped:
-            logger.info("Skipping excluded model dir: %s", os.path.basename(d))
+            print(f"Skipping excluded model dir: {os.path.basename(d)}")
 
         any_error = False
         for model_dir in model_dirs:
@@ -641,7 +578,7 @@ def main():
             checkpoint = resolve_checkpoint_file(model_dir)
             output_path = os.path.join(args.output_dir, args.model_type, f"{split}_{run}")
             if os.path.exists(os.path.join(output_path, "encoder_layer_0.pt")):
-                logger.info("Skipping %s/%s_%s -- already extracted", args.model_type, split, run)
+                print(f"Skipping {args.model_type}/{split}_{run} -- already extracted")
                 continue
             test_src, test_tgt = default_test_files(data_bin, run, None, None)
             rc = extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, args.batch_size)
@@ -649,18 +586,13 @@ def main():
         sys.exit(EXIT_ERROR if any_error else EXIT_SUCCESS)
 
     if not args.checkpoint or not args.data_bin:
-        logger.error("Single-model mode requires --checkpoint and --data-bin (or use --all)")
-        sys.exit(EXIT_ERROR)
+        sys.exit("Single-model mode requires --checkpoint and --data-bin (or use --all)")
     model_dir = os.path.dirname(args.checkpoint)
     split, run = parse_split_run(model_dir)
     output_path = os.path.join(args.output_dir, args.model_type, f"{split}_{run}")
     if os.path.exists(os.path.join(output_path, "encoder_layer_0.pt")):
-        logger.info("Skipping %s/%s_%s -- already extracted", args.model_type, split, run)
+        print(f"Skipping {args.model_type}/{split}_{run} -- already extracted")
         sys.exit(EXIT_SKIPPED)
     test_src, test_tgt = default_test_files(args.data_bin, run, args.test_src, args.test_tgt)
     rc = extract_one(args.checkpoint, args.data_bin, run, output_path, test_src, test_tgt, args.batch_size)
     sys.exit(rc)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,37 +1,12 @@
 """Stem-final-match, conjugation-class and L/NL probing on all layers.
 
-Probes whether layer representations encode three morphological properties:
-
-  - stem_final_match: a *per-sample* binary flag -- do all the surface forms in
-    one inflection instance (the source form(s) in the .src line plus the target
-    form, i.e. the "three forms" of the dual-source setup) share the same
-    stem-final consonant cluster?  'differ' marks an alternation across the
-    forms (the surface footprint of the L-shape); 'same' marks none.
-  - conjugation:      the three Spanish conjugation classes (-ar / -er / -ir),
-    derived from each lemma's infinitive ending (lemma-level).
-  - l_shaped:         whether the form's lemma belongs to an L-shaped paradigm
-    (L vs NL), the L-shaped morphome membership (lemma-level).
-
-The motivating question is whether, controlling for conjugation class and for
-L/NL membership, the network represents whether the specific forms it was given
-actually alternate at the stem-final consonant.  stem_final_match is computed
-directly from the .src/.tgt surface strings, so it varies per training instance
-rather than per lemma.
-
-The readout is content mean-pooling over
-the character positions of each layer (--pool-positions content, the leak-free
-default), and cross-validation defaults to lemma-disjoint folds (--cv-mode
-grouped) so the probe cannot memorise a lemma->class lookup across folds.
-
-Metric is **balanced accuracy** (macro recall), NOT raw accuracy: all three
-properties are heavily imbalanced (l_shaped ~89% NL, stem_final_match ~89%
-'same', conjugation ~82% -ar), so a majority-class predictor scores ~0.82-0.89
-on raw accuracy while balanced accuracy stays at chance (1/n_classes). Raw
-accuracy is reported alongside for context, and --control adds a structure-
-preserving selectivity control (see CONTROL_MODE); `selectivity` is computed on
-balanced accuracy, `selectivity_raw` on raw accuracy.
-
-Reuses the label lookups and helpers from extract_labels.py.
+Probes whether each layer's representations encode three morphological
+properties: stem_final_match (do the forms of one inflection instance share
+the same stem-final consonant cluster; per sample), conjugation (-ar/-er/-ir;
+lemma-level), and l_shaped (L vs NL morphome membership; lemma-level). The
+metric is balanced accuracy because all three properties are heavily
+class-imbalanced. Cross-validation folds default to lemma-disjoint so the
+probe cannot memorize a lemma-to-class lookup.
 
 Usage:
   run_probes_stemfinal_lnl.py --model-type TYPE --split SPLIT --run RUN
@@ -57,7 +32,7 @@ Options:
   --config FILE              Probe config file [default: probing/config.json].
   --control                  Also run control probes with shuffled labels (for
                              selectivity). Lemma-level properties use a group-
-                             level permutation of the lemma->label assignment;
+                             level permutation of the lemma-to-label assignment;
                              stem_final_match uses a per-sample shuffle.
   --n-controls N             Label permutations to average the control over
                              [default: 5].
@@ -84,7 +59,6 @@ Options:
 """
 
 import json
-import logging
 import os
 import sys
 
@@ -106,8 +80,6 @@ from probing.extract_labels import (
 )
 from probing.utils.cli import parse, standard_sentinels
 from probing.utils.content_mask import load_pool_mask, pool_reps
-
-logger = logging.getLogger(__name__)
 
 # Properties probed by this script, in output order.
 PROPERTIES = ("stem_final_match", "conjugation", "l_shaped")
@@ -131,12 +103,7 @@ VARIANT_DEFAULTS = {
 
 
 def variant_tag(args):
-    """Filename suffix encoding non-default protocol flags ('' for defaults).
-
-    Keeps the all-defaults filename unchanged (backward compatible) while
-    giving every flag combination its own output file, so the idempotency
-    check can never silently skip a run with different settings.
-    """
+    """Filename suffix encoding non-default protocol flags ('' for defaults)."""
     parts = []
     for key, default in VARIANT_DEFAULTS.items():
         val = getattr(args, key)
@@ -146,15 +113,8 @@ def variant_tag(args):
 
 
 def shuffle_labels_by_group(y, groups, rng):
-    """Structure-preserving control labels: permute the per-GROUP assignment.
-
-    Each group (lemma) keeps one consistent label and the multiset of
-    per-group labels is preserved; only which group carries which label is
-    randomized. This is the control a lemma-disjoint probe could actually
-    exploit (cf. Hewitt & Liang 2019), unlike a per-sample shuffle, which
-    destroys the group<->label structure entirely. Only meaningful for
-    group-constant properties.
-    """
+    """Control labels: permute which group (lemma) carries which label
+    (a per-sample shuffle is trivially unlearnable under lemma-disjoint folds)."""
     uniq, inv = np.unique(groups, return_inverse=True)
     group_labels = np.empty(len(uniq), dtype=y.dtype)
     group_labels[inv] = y  # one write per sample; group-constant by assumption
@@ -172,13 +132,11 @@ def parse_args():
 
 
 def load_config(config_path):
-    """Load probing configuration from JSON file."""
     with open(config_path) as f:
         return json.load(f)
 
 
 def build_probe(probe_type, config):
-    """Build an sklearn pipeline for the given probe type."""
     probe_config = config["probe"]
 
     if probe_type == "linear":
@@ -201,33 +159,19 @@ def build_probe(probe_type, config):
 
 
 def get_tgt_path(data_dir, split, run):
-    """Construct the test .tgt file path."""
     run_num = run.split("_")[0]
     return os.path.join(data_dir, split, "test", f"run{run_num}", f"test.{split}_{run}.tgt")
 
 
 def get_src_path(data_dir, split, run):
-    """Construct the test .src file path."""
     run_num = run.split("_")[0]
     return os.path.join(data_dir, split, "test", f"run{run_num}", f"test.{split}_{run}.src")
 
 
 def build_property_labels(src_path, tgt_path, data_dir):
-    """Build per-sample stem_final_match, conjugation and l_shaped labels.
-
-    conjugation and l_shaped are lemma-level, keyed on (target_tag,
-    normalized_form) via the same lookups extract_labels.py uses (same
-    fallbacks: -ar for unknown conjugation, NL for unknown L-shape).
-    stem_final_match is per-sample, computed directly from the src/tgt surface
-    forms by stemfinal_match_label.
-
-    Returns:
-        labels: dict mapping property name -> [n_samples] int array.
-    """
+    """Build the per-sample stem_final_match, conjugation and l_shaped label arrays."""
     conj_lookup, conj_counts = build_conjugation_lookup(data_dir)
     lshaped_lookup, n_l_lemmas, n_nl_lemmas = build_lshaped_lookup(data_dir)
-    logger.info("Conjugation classes (lemmas): %s", dict(conj_counts))
-    logger.info("L-shaped lookup: %d L lemmas, %d NL lemmas", n_l_lemmas, n_nl_lemmas)
 
     with open(src_path) as f:
         src_lines = [line.strip() for line in f]
@@ -266,11 +210,7 @@ def build_property_labels(src_path, tgt_path, data_dir):
         lnl_labels.append(LSHAPED_MAP["L"] if is_l else LSHAPED_MAP["NL"])
 
     if n_conj_miss or n_lnl_miss:
-        logger.warning(
-            "Lemma lookup misses (used fallback): %d conjugation, %d l_shaped",
-            n_conj_miss,
-            n_lnl_miss,
-        )
+        print(f"WARNING: Lemma lookup misses (used fallback): {n_conj_miss} conjugation, {n_lnl_miss} l_shaped", file=sys.stderr)
 
     return {
         "stem_final_match": np.array(stemfinal_labels, dtype=np.int64),
@@ -280,16 +220,7 @@ def build_property_labels(src_path, tgt_path, data_dir):
 
 
 def build_lemma_groups(data_dir, split, run):
-    """Per-sample lemma id, so CV folds can be made lemma-disjoint.
-
-    Without this, the same lemma's cells land in both train and test folds and
-    the probe memorises the (deterministic) lemma->class lookup instead of
-    testing whether the property generalises to unseen lemmas.  Keyed on the
-    TARGET form's lemma via lemma_form.json (a list of {lemma: {tag: form}}).
-    Syncretic forms can merge two lemmas into one group — safe (never splits a
-    lemma across folds, only conservative).  Returns a fresh singleton group
-    where the form is not found in the lemma table.
-    """
+    """Per-sample lemma id, so CV folds can be made lemma-disjoint."""
     run_num = run.split("_")[0]
     base = os.path.join(data_dir, split, "test", f"run{run_num}")
     with open(os.path.join(base, "lemma_form.json")) as f:
@@ -330,24 +261,7 @@ def run_probe_on_subset(
     n_controls=5,
     probe_types=("linear",),
 ):
-    """Run probes on a single subset, return list of result row dicts.
-
-    cv_mode='grouped' (default): lemma-disjoint folds (StratifiedGroupKFold) so the
-    probe cannot memorise the lemma->class lookup across folds. cv_mode='per-form':
-    ordinary StratifiedKFold (rows split at random, ignoring lemma) — the leaky
-    baseline, kept for the A/B contrast that demonstrates the leakage.
-
-    The control (when requested) averages n_controls label permutations; the
-    permutation is group-level or per-sample per CONTROL_MODE[property_name].
-
-    The headline metric is **balanced accuracy** (macro recall), not raw
-    accuracy, and selectivity is computed on it. Every property here is heavily
-    imbalanced (l_shaped ~89% NL, stem_final_match ~89% 'same'), so raw accuracy
-    mostly measures the class prior: a majority-class predictor scores ~0.89
-    while balanced accuracy stays at chance (1/n_classes). Raw accuracy is still
-    reported alongside for context. Same rationale as
-    run_probes_lnl_within_stemfinal.py.
-    """
+    """Probe one property on a single subset; return list of result row dicts."""
     cv_folds = config["probe"]["cv_folds"]
     seed = config["probe"]["random_seed"]
     scoring = ("balanced_accuracy", "accuracy")
@@ -355,14 +269,7 @@ def run_probe_on_subset(
 
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        logger.warning(
-            "  %s_%d | %s | %s: skipping (< 2 classes in %d samples)",
-            layer_type,
-            layer_index,
-            subset_name,
-            property_name,
-            len(y),
-        )
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (< 2 classes in {len(y)} samples)", file=sys.stderr)
         return results
 
     # Cap folds by the sparsest class: StratifiedKFold needs n_splits <= the
@@ -376,15 +283,7 @@ def run_probe_on_subset(
         n_folds = min(cv_folds, per_class_groups)
     n_groups = len(np.unique(groups))
     if n_folds < 2:
-        logger.warning(
-            "  %s_%d | %s | %s: skipping (n_folds<2: classes=%d, lemma groups=%d)",
-            layer_type,
-            layer_index,
-            subset_name,
-            property_name,
-            n_classes,
-            n_groups,
-        )
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (n_folds<2: classes={n_classes}, lemma groups={n_groups})", file=sys.stderr)
         return results
 
     _, counts = np.unique(y, return_counts=True)
@@ -462,14 +361,12 @@ def run_probe_on_subset(
                 f" [ctrl_bal={row['control_balanced_accuracy']:.4f} "
                 f"sel={row['selectivity']:+.4f} ({row['control_mode']})]"
             )
-        logger.info(log_msg)
 
     return results
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     # Check idempotency. Non-default protocol flags land in the filename so a
     # rerun with different settings can never be silently skipped against a
@@ -477,19 +374,12 @@ def main():
     output_dir = os.path.join(args.output_dir, args.model_type)
     variant = variant_tag(args)
     output_path = os.path.join(output_dir, f"{args.split}_{args.run}_stemfinal_lnl_results{variant}.csv")
-    logger.info("Output file: %s", output_path)
     if os.path.exists(output_path):
-        logger.info(
-            "Skipping %s/%s_%s -- results already exist",
-            args.model_type,
-            args.split,
-            args.run,
-        )
+        print(f"Skipping {args.model_type}/{args.split}_{args.run} -- results already exist")
         sys.exit(EXIT_SKIPPED)
 
     if not os.path.exists(args.config):
-        logger.error("Config not found: %s", args.config)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Config not found: {args.config}")
     config = load_config(args.config)
 
     # Validate representations directory (or the pooled cache standing in for it)
@@ -499,8 +389,7 @@ def main():
         reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     metadata_path = os.path.join(reps_dir, "metadata.json")
     if not os.path.exists(metadata_path):
-        logger.error("Representations not found: %s", reps_dir)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Representations not found: {reps_dir}")
 
     with open(metadata_path) as f:
         metadata = json.load(f)
@@ -508,35 +397,21 @@ def main():
     n_encoder = metadata["n_encoder_layers"]
     n_decoder = metadata["n_decoder_layers"]
     n_samples = metadata["n_samples"]
-    logger.info(
-        "Loaded metadata: %d encoder + %d decoder layers, %d samples",
-        n_encoder,
-        n_decoder,
-        n_samples,
-    )
 
     tgt_path = get_tgt_path(args.data_dir, args.split, args.run)
     src_path = get_src_path(args.data_dir, args.split, args.run)
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            logger.error("Data file not found: %s", path)
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"Data file not found: {path}")
 
     labels = build_property_labels(src_path, tgt_path, args.data_dir)
 
     for prop, y in labels.items():
         if len(y) != n_samples:
-            logger.error(
-                "Sample count mismatch for %s: data=%d, representations=%d",
-                prop,
-                len(y),
-                n_samples,
-            )
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"Sample count mismatch for {prop}: data={len(y)}, representations={n_samples}")
 
     for prop, y in labels.items():
         unique, counts = np.unique(y, return_counts=True)
-        logger.info("Labels[%s]: %s", prop, dict(zip(unique.tolist(), counts.tolist())))
 
     # Per-sample lemma id for lemma-disjoint CV folds.
     lemma_groups = build_lemma_groups(args.data_dir, args.split, args.run)
@@ -550,8 +425,7 @@ def main():
     probe_types = args.probe_types.split()
     bad = set(probe_types) - {"linear", "mlp"}
     if bad:
-        logger.error("Invalid --probe-types: %s", sorted(bad))
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Invalid --probe-types: {sorted(bad)}")
 
     seed = config["probe"]["random_seed"]
     rng = np.random.RandomState(seed)
@@ -568,13 +442,12 @@ def main():
                 reps_dir, f"{layer_type}_layer_{layer_index}_{args.pool_positions}.npy"
             )
             if not os.path.exists(pooled_path):
-                logger.error("Pooled cache incomplete: missing %s", pooled_path)
-                sys.exit(EXIT_ERROR)
+                sys.exit(f"Pooled cache incomplete: missing {pooled_path}")
             X_all = np.load(pooled_path)
         else:
             rep_path = os.path.join(reps_dir, f"{layer_type}_layer_{layer_index}.pt")
             if not os.path.exists(rep_path):
-                logger.warning("Skipping %s_%d: missing rep file", layer_type, layer_index)
+                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing rep file", file=sys.stderr)
                 continue
             reps = torch.load(rep_path, weights_only=False)
 
@@ -583,10 +456,9 @@ def main():
                 layer_type,
                 layer_index,
                 args.pool_positions,
-                logger=logger,
             )
             if mask is None:
-                logger.warning("Skipping %s_%d: missing mask file", layer_type, layer_index)
+                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing mask file", file=sys.stderr)
                 continue
             X_all = pool_reps(reps, mask, args.pool_positions).numpy()
         probe_site = "content-pool" if args.pool_positions == "content" else f"pool-{args.pool_positions}"
@@ -636,9 +508,4 @@ def main():
         for row in all_results:
             f.write(",".join(fmt(row[c]) for c in columns) + "\n")
 
-    logger.info("Saved %d results to %s", len(all_results), output_path)
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

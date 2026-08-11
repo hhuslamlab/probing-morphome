@@ -1,9 +1,7 @@
 """docopt helpers shared by the analysis scripts.
 
-Each script's module docstring carries its own ``Usage:`` block; this module
-turns the parsed option dict into an attribute namespace (``--model-type`` ->
-``args.model_type``), applies type casts, and validates closed choice sets,
-which docopt itself does not enforce.
+Turns each script's parsed option dict into an attribute namespace, applies
+type casts, and validates closed choice sets, which docopt does not enforce.
 """
 
 from types import SimpleNamespace
@@ -12,22 +10,7 @@ from docopt import docopt
 
 
 def parse(doc, types=None, choices=None, sentinels=None, version=None):
-    """Parse the calling script's docstring with docopt.
-
-    Args:
-        doc: the module docstring (must contain a Usage: block).
-        types: {attr_name: callable} casts applied when the value is not None.
-        choices: {attr_name: iterable} closed sets validated after casting.
-        sentinels: {placeholder: real_value} substitutions applied to string
-            options. Used for defaults that docopt cannot express, e.g. the
-            FEATURE_INFORMED_DATA placeholder standing in for a path computed
-            at runtime.
-        version: optional version string for --version.
-
-    Returns:
-        SimpleNamespace with kebab-case options mapped to snake_case
-        attributes and <positionals> mapped to bare names.
-    """
+    """Parse doc with docopt into a SimpleNamespace (snake_case attrs; sentinels fill runtime defaults)."""
     raw = docopt(doc, version=version)
     ns = SimpleNamespace()
     for key, value in raw.items():

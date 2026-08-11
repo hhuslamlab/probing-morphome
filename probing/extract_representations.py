@@ -27,7 +27,6 @@ Options:
 """
 
 import json
-import logging
 import os
 import sys
 
@@ -47,8 +46,6 @@ from probing.utils.cli import parse, standard_sentinels
 from probing.utils.hooks import HookManager
 from probing.utils.content_mask import build_content_mask
 
-logger = logging.getLogger("probing.extract")
-
 
 def parse_args():
     return parse(__doc__,
@@ -59,15 +56,7 @@ def parse_args():
 
 
 def reset_model_weights(model, seed):
-    """Re-initialise every parameter in-place, deterministically.
-
-    Walks the module tree and calls reset_parameters() on every submodule that
-    exposes it (Linear, LayerNorm, Embedding, MultiheadAttention, Conv*, …).
-    For any leaf parameter not touched by reset_parameters, we fall back to a
-    small-variance normal draw.  This preserves architecture exactly and
-    matches what a freshly constructed model would produce, up to ordering of
-    init calls — which we fix with a torch.manual_seed.
-    """
+    """Deterministically re-initialise every parameter in place (reset_parameters where available, else a small normal draw)."""
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -82,10 +71,7 @@ def reset_model_weights(model, seed):
                 for p in module.parameters(recurse=False):
                     touched_param_ids.add(id(p))
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "reset_parameters failed on %s: %s — will fall back to normal init",
-                    module.__class__.__name__, e,
-                )
+                print(f"WARNING: reset_parameters failed on {module.__class__.__name__}: {e} — will fall back to normal init", file=sys.stderr)
 
     fallback_count = 0
     for name, param in model.named_parameters():
@@ -98,20 +84,11 @@ def reset_model_weights(model, seed):
                 torch.nn.init.zeros_(param)
         fallback_count += 1
     if fallback_count:
-        logger.info("random_init fallback applied to %d parameters", fallback_count)
+        pass
 
 
 def scramble_src(src, src_mask, global_offset, base_seed):
-    """Permute non-pad source positions per sample, deterministically.
-
-    src:      [seq_len, batch_size] long tensor of token ids
-    src_mask: [seq_len, batch_size] float/byte mask, nonzero = valid
-
-    Each column (sample) has its valid positions permuted independently.  The
-    permutation seed is derived from (base_seed, global_offset + column_idx)
-    so that the same dataset position always gets the same permutation across
-    runs and is independent of batch boundaries.
-    """
+    """Permute non-pad source positions per sample, deterministically (src and src_mask are [seq_len, batch_size])."""
     seq_len, batch_size = src.shape
     out = src.clone()
     for b in range(batch_size):
@@ -133,11 +110,7 @@ def _baseline_output_dir(base_dir, baseline):
 
 
 def get_data_files(data_dir, split, run):
-    """Construct train/dev/test file paths from split and run identifier.
-
-    File naming convention: {subset}.{split}_{run}.src/.tgt
-    Directory structure: {data_dir}/{split}/{subset}/run{run_num}/
-    """
+    """Return train/dev/test paths: {data_dir}/{split}/{subset}/run{run_num}/{subset}.{split}_{run}.src/.tgt."""
     run_num = run.split("_")[0]
     model_name = f"{split}_{run}"
 
@@ -151,15 +124,7 @@ def get_data_files(data_dir, split, run):
 
 
 def pad_and_concatenate(tensor_list, pad_dim=1):
-    """Pad tensors to the same size along pad_dim, then concatenate along dim 0.
-
-    Args:
-        tensor_list: list of tensors with potentially different sizes along pad_dim.
-        pad_dim: dimension to pad (default 1 = seq_len for [batch, seq_len, ...]).
-
-    Returns:
-        Concatenated tensor with uniform size along pad_dim.
-    """
+    """Pad tensors to the same size along pad_dim, then concatenate along dim 0."""
     max_size = max(t.shape[pad_dim] for t in tensor_list)
     padded = []
     for t in tensor_list:
@@ -173,9 +138,8 @@ def pad_and_concatenate(tensor_list, pad_dim=1):
     return torch.cat(padded, dim=0)
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     # Check idempotency: if output already exists, skip.  The output root is
     # suffixed when running in a baseline mode so we never overwrite the real
@@ -184,22 +148,17 @@ def main():
     output_path = os.path.join(effective_output_dir, args.model_type, f"{args.split}_{args.run}")
     check_file = os.path.join(output_path, "encoder_layer_0.pt")
     if os.path.exists(check_file):
-        logger.info(
-            "Skipping %s/%s_%s (baseline=%s) -- already extracted",
-            args.model_type, args.split, args.run, args.baseline,
-        )
+        print(f"Skipping {args.model_type}/{args.split}_{args.run} (baseline={args.baseline}) -- already extracted")
         sys.exit(EXIT_SKIPPED)
 
     files = get_data_files(args.data_dir, args.split, args.run)
     for subset, paths in files.items():
         for path in paths:
             if not os.path.exists(path):
-                logger.error("Missing %s file: %s", subset, path)
-                sys.exit(EXIT_ERROR)
+                sys.exit(f"Missing {subset} file: {path}")
 
     if not os.path.exists(args.checkpoint):
-        logger.error("Checkpoint not found: %s", args.checkpoint)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Checkpoint not found: {args.checkpoint}")
 
     # Import model classes so torch.load can unpickle them.  transformer is
     # always required: vanilla / character_separated use Transformer directly,
@@ -212,11 +171,7 @@ def main():
         try:
             __import__(_optional_model_module)
         except ImportError as e:
-            logger.warning(
-                "Optional model module %s unavailable (%s); "
-                "checkpoints of that architecture cannot be unpickled.",
-                _optional_model_module, e,
-            )
+            print(f"WARNING: Optional model module {_optional_model_module} unavailable ({e}); checkpoints of that architecture cannot be unpickled.", file=sys.stderr)
 
     # Some checkpoints (e.g. several feature_invariant 50L/90L runs) were pickled
     # from a repo layout where these modules lived under a top-level `src`
@@ -241,27 +196,17 @@ def main():
     data = TagInBracketsDataLoader(
         files["train"], files["dev"], files["test"], shuffle=False
     )
-    logger.info(
-        "Loaded data: %d source vocab, %d target vocab",
-        data.source_vocab_size,
-        data.target_vocab_size,
-    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model = model.to(device)
     model.eval()
-    logger.info("Loaded model from %s (device: %s)", args.checkpoint, device)
 
     if args.baseline == "random_init":
-        logger.info("Baseline=random_init: resetting all model weights (seed=%d)", args.baseline_seed)
         reset_model_weights(model, args.baseline_seed)
         model.eval()
     elif args.baseline == "scrambled_input":
-        logger.info(
-            "Baseline=scrambled_input: source positions will be permuted per sample (seed=%d)",
-            args.baseline_seed,
-        )
+        pass
 
     hook_manager = HookManager()
     hook_manager.register_hooks(model)
@@ -321,8 +266,7 @@ def main():
     hook_manager.remove_hooks()
 
     if not batch_reps:
-        logger.error("No representations collected -- check model and data")
-        sys.exit(EXIT_ERROR)
+        sys.exit("No representations collected -- check model and data")
 
     # Masks are tiny (no embed dim) so they stay in RAM; pad to global max seq_len.
     src_masks = pad_and_concatenate(batch_src_masks, pad_dim=1)  # [n_samples, max_src_len]
@@ -353,7 +297,6 @@ def main():
         content_mask_filename = f"{layer_type}_layer_{layer_index}_content_mask.pt"
         torch.save(content_mask, os.path.join(output_path, content_mask_filename))
 
-        logger.info("Saved %s: shape %s", filename, list(rep.shape))
 
         del rep, tensors
 
@@ -377,15 +320,4 @@ def main():
     with open(os.path.join(output_path, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
 
-    logger.info(
-        "Extraction complete: %d samples, %d encoder + %d decoder layers, embed_dim=%d",
-        n_samples,
-        n_encoder_layers,
-        n_decoder_layers,
-        embed_dim,
-    )
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,40 +1,12 @@
 """Surface n-gram baselines for the stem-final / conjugation / L-NL probes.
 
-How much of what the probes decode is predictable from SURFACE FORM alone?
-This script re-runs the probing protocols of run_probes_stemfinal_lnl.py
-(analysis A) and run_probes_lnl_within_stemfinal.py (analysis B) with the
-model representations replaced by surface n-gram statistics of the very same
-inputs -- same labels, same lemma-disjoint StratifiedGroupKFold folds (same
-seed, same y/groups => identical splits), same metrics -- so every row is
-directly comparable to a probe row.
-
-Two baseline families (--baselines):
-
-  - classifier: phoneme n-gram counts (CountVectorizer over the space-
-    separated phoneme tokens, orders 1..n) fed to the same LogisticRegression
-    the probes use. Two deliberate deviations from build_probe: no
-    StandardScaler (mean-centering is meaningless on sparse counts), and the
-    vectorizer sits INSIDE the CV pipeline so the n-gram vocabulary is refit
-    per fold (no vocabulary leakage across folds).
-  - lm: class-conditional generative phoneme n-gram LMs; predict = argmax
-    class log-likelihood under a UNIFORM class prior, i.e. a pure likelihood
-    ratio that cannot fall back on majority-class guessing (the
-    majority_baseline column is still reported for reference). Skips
-    stem_final_match: that label is a relation BETWEEN the forms of one
-    instance, which a per-class generative model of strings does not model
-    coherently (the classifier family covers it).
-
-Text views (probe_site column) come from utils/surface_text.py: src-content /
-tgt-content mirror what content pooling exposes to encoder / decoder probes;
-all-content adds the src+tgt union (decoder states attend to the encoder, so
-this is the fair analog of decoder probes and the only view with full
-information for stem_final_match); src-with-tags (--with-tags) mirrors tag
-pooling.
-
-Representation-free: runs per (split, run) only, no --model-type. Results land
-under the pseudo-arch directory ``ngram/`` in the same two CSV schemas as the
-probe scripts (layer_type='ngram', layer_index=n-gram order), so the
-summarizers can overlay them.
+Measures how much of what the probes decode is predictable from surface form
+alone, by re-running the probing analyses with the model representations
+replaced by phoneme n-gram statistics of the same inputs. Two families: a
+classifier (n-gram counts fed to the probes' logistic regression) and an lm
+(class-conditional n-gram LMs scored under a uniform class prior). Labels,
+metrics and lemma-disjoint folds match the probe scripts, so every row is
+directly comparable; results land under the pseudo-arch directory ngram/.
 
 Usage:
   run_ngram_baselines.py --split SPLIT --run RUN [--data-dir DIR]
@@ -67,7 +39,6 @@ Options:
   --n-jobs N            Parallel workers for cross-validation [default: 1].
 """
 
-import logging
 import math
 import os
 import sys
@@ -104,8 +75,6 @@ from probing.run_probes_stemfinal_lnl import (
 )
 from probing.utils.surface_text import build_texts
 
-logger = logging.getLogger(__name__)
-
 # Short view names used inside probe_type labels of the within-stemfinal CSV
 # (that schema has no probe_site column).
 VIEW_SHORT = {
@@ -134,15 +103,8 @@ VARIANT_DEFAULTS = {
 
 
 class NgramLMClassifier(BaseEstimator, ClassifierMixin):
-    """Class-conditional phoneme n-gram LM classifier (pure likelihood ratio).
-
-    fit() counts n-grams of orders 1..order per class (BOS padding, EOS
-    terminator). predict() scores each text under every class LM with stupid
-    backoff -- the highest order whose n-gram was seen wins, discounted by
-    backoff_alpha per backed-off level, with an add-k floor at the unigram
-    level for unseen symbols -- and returns the argmax class under a uniform
-    class prior.
-    """
+    """Class-conditional phoneme n-gram LM classifier (stupid backoff; argmax
+    class under a uniform prior, so it cannot fall back on majority guessing)."""
 
     BOS = "<s>"
     EOS = "</s>"
@@ -205,11 +167,8 @@ class NgramLMClassifier(BaseEstimator, ClassifierMixin):
 
 
 def build_ngram_classifier(order, config):
-    """Surface analog of build_probe: n-gram counts -> the probes' logistic.
-
-    Word-level n-grams over the space-separated phoneme tokens (analyzer='char'
-    would split multi-codepoint IPA symbols and glue phonemes across spaces).
-    """
+    """Pipeline of n-gram counts into the probes' logistic regression (word-level
+    n-grams: analyzer='char' would split multi-codepoint IPA symbols)."""
     lin = config["probe"]["linear"]
     return Pipeline(
         [
@@ -287,19 +246,14 @@ def run_baseline_rows(
     n_controls,
     n_jobs,
 ):
-    """Analysis A: one (view, order, family, property) cell.
-
-    Mirrors run_probes_stemfinal_lnl.run_probe_on_subset (fold caps, majority
-    baseline, control modes) with the pooled representations replaced by the
-    surface texts.
-    """
+    """Analysis A: one (view, order, family, property) cell; return result rows."""
     cv_folds = config["probe"]["cv_folds"]
     seed = config["probe"]["random_seed"]
     probe_type = FAMILY_PROBE_TYPE[family]
 
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        logger.warning("  ngram_%d | %s | %s: skipping (< 2 classes)", order, probe_site, property_name)
+        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (< 2 classes)", file=sys.stderr)
         return []
     # Cap folds by the sparsest class (per-class sample count for plain
     # stratified folds, per-class lemma-group count for grouped folds) — NOT by
@@ -311,7 +265,7 @@ def run_baseline_rows(
         per_class_groups = min(len(np.unique(groups[y == c])) for c in classes)
         n_folds = min(cv_folds, per_class_groups)
     if n_folds < 2:
-        logger.warning("  ngram_%d | %s | %s: skipping (n_folds<2)", order, probe_site, property_name)
+        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (n_folds<2)", file=sys.stderr)
         return []
 
     _, counts = np.unique(y, return_counts=True)
@@ -394,30 +348,21 @@ def run_baseline_rows(
     )
     if control:
         log_msg += f" [control={row['control_accuracy']:.4f}]"
-    logger.info(log_msg)
     return [row]
 
 
 def within_subset_rows(
     X_texts, y, groups, subset_name, order, probe_type_label, family, config, rng, n_controls, n_jobs
 ):
-    """Analysis B: l_shaped on one stem_final_match subset.
-
-    Mirrors run_probes_lnl_within_stemfinal.probe_subset: balanced accuracy via
-    lemma-disjoint folds capped by the rarer class's lemma count, plus the
-    group-level shuffled-label control (always on -- the CSV schema requires it).
-    """
+    """Analysis B: l_shaped on one stem_final_match subset; return result rows."""
     n, n_L, n_NL, g_L, g_NL, majority = subset_stats(y, groups)
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        logger.warning("  ngram_%d | %s | %s: skipping (only %d class)", order, subset_name, probe_type_label, n_classes)
+        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (only {n_classes} class)", file=sys.stderr)
         return []
     n_folds = min(config["probe"]["cv_folds"], min(g_L, g_NL))
     if n_folds < 2:
-        logger.warning(
-            "  ngram_%d | %s | %s: skipping (n_folds<2: L lemmas=%d, NL lemmas=%d)",
-            order, subset_name, probe_type_label, g_L, g_NL,
-        )
+        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (n_folds<2: L lemmas={g_L}, NL lemmas={g_NL})", file=sys.stderr)
         return []
 
     seed = config["probe"]["random_seed"]
@@ -473,45 +418,33 @@ def within_subset_rows(
         "n_L_lemmas": g_L,
         "n_NL_lemmas": g_NL,
     }
-    logger.info(
-        "  ngram_%d | %-16s | %-12s: bal_acc=%.4f (+/-%.4f) ctrl=%.4f sel=%+.4f "
-        "[raw=%.4f base=%.4f n=%d L=%d/%dlem folds=%d]",
-        order, subset_name, probe_type_label,
-        bal.mean(), bal.std(), ctrl_bal, bal.mean() - ctrl_bal,
-        raw.mean(), majority, n, n_L, g_L, n_folds,
-    )
     return [row]
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 
     output_dir = os.path.join(args.output_dir, "ngram")
     variant = variant_tag(args)
     path_a = os.path.join(output_dir, f"{args.split}_{args.run}_stemfinal_lnl_results{variant}.csv")
     path_b = os.path.join(output_dir, f"{args.split}_{args.run}_lnl_within_stemfinal{variant}.csv")
-    logger.info("Output files: %s , %s", path_a, path_b)
     if os.path.exists(path_a) and os.path.exists(path_b):
-        logger.info("Skipping ngram/%s_%s -- results already exist", args.split, args.run)
+        print(f"Skipping ngram/{args.split}_{args.run} -- results already exist")
         sys.exit(EXIT_SKIPPED)
 
     if not os.path.exists(args.config):
-        logger.error("Config not found: %s", args.config)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"Config not found: {args.config}")
     config = load_config(args.config)
 
     src_path = get_src_path(args.data_dir, args.split, args.run)
     tgt_path = get_tgt_path(args.data_dir, args.split, args.run)
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            logger.error("Data file not found: %s", path)
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"Data file not found: {path}")
 
     labels = build_property_labels(src_path, tgt_path, args.data_dir)
     for prop, y in labels.items():
         unique, counts = np.unique(y, return_counts=True)
-        logger.info("Labels[%s]: %s", prop, dict(zip(unique.tolist(), counts.tolist())))
 
     with open(src_path) as f:
         src_lines = [line.strip() for line in f]
@@ -520,15 +453,13 @@ def main():
     views = build_texts(src_lines, tgt_lines, with_tags=args.with_tags)
     for name, texts in views.items():
         if len(texts) != len(labels["l_shaped"]):
-            logger.error("View %s has %d rows, labels have %d", name, len(texts), len(labels["l_shaped"]))
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"View {name} has {len(texts)} rows, labels have {len(labels['l_shaped'])}")
 
     groups = build_lemma_groups(args.data_dir, args.split, args.run)
     seed = config["probe"]["random_seed"]
     rng = np.random.RandomState(seed)
 
     # Analysis A: full-set accuracy per property (probe-row schema)
-    logger.info("=== Analysis A: full-set n-gram baselines ===")
     rows_a = []
     for probe_site, texts in views.items():
         X_texts = np.array(texts, dtype=object)
@@ -556,7 +487,6 @@ def main():
                     )
 
     # Analysis B: l_shaped within stem_final_match subsets
-    logger.info("=== Analysis B: L/NL within stem-final subsets ===")
     stem_final_match = labels["stem_final_match"]
     l_shaped = labels["l_shaped"]
     rows_b = []
@@ -624,16 +554,10 @@ def main():
                     f"{row['accuracy']:.6f},{row['std']:.6f},"
                     f"{row['majority_baseline']:.6f},{row['n_classes']},{row['n_samples']}\n"
                 )
-    logger.info("Saved %d analysis-A rows to %s", len(rows_a), path_a)
 
     # Analysis B CSV: identical schema to run_probes_lnl_within_stemfinal.py.
     with open(path_b, "w") as f:
         f.write(",".join(WITHIN_CSV_COLUMNS) + "\n")
         for row in rows_b:
             f.write(",".join(str(row[c]) for c in WITHIN_CSV_COLUMNS) + "\n")
-    logger.info("Saved %d analysis-B rows to %s", len(rows_b), path_b)
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

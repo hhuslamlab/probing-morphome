@@ -1,14 +1,10 @@
-"""Probes on the stem-final-position readout (pool_stemfinal_position.py).
+"""Probes on the stem-final-position readout.
 
-Same protocol as run_probes_stemfinal_lnl.py — linear + MLP probes, 5-fold
-lemma-disjoint StratifiedGroupKFold, balanced accuracy, structure-preserving
-controls — but the input is the hidden state AT the stem-final consonant
-position instead of the content mean. Probes the three main properties plus
-l_shaped restricted to the stemfinal_same subset (the position-targeted
-version of the dissociation analysis).
-
-Output: <output-dir>/<model_type>/<split>_<run>_positional.csv
-Exit codes: 0 ok, 1 error, 2 skipped.
+Probes the three morphological properties, plus l_shaped restricted to the
+stemfinal_same subset, on the hidden state at the stem-final consonant
+position rather than the content mean. The metric is balanced accuracy
+because the properties are heavily class-imbalanced, and folds are
+lemma-disjoint to prevent lemma memorization.
 
 Usage:
   run_probes_positional.py --model-type TYPE --split SPLIT --run RUN
@@ -48,7 +44,6 @@ from probing.analysis_common import (
     load_labels_and_groups,
     load_layer,
     output_path_or_skip,
-    setup_logging,
     write_rows,
 )
 from probing.run_probes_stemfinal_lnl import (
@@ -58,8 +53,6 @@ from probing.run_probes_stemfinal_lnl import (
     shuffle_labels_by_group,
 )
 from probing.utils.cli import parse, standard_sentinels
-
-logger = setup_logging(__name__)
 
 PROPERTIES = ("stem_final_match", "conjugation", "l_shaped")
 
@@ -101,19 +94,18 @@ def probe_cell(X, y, groups, probe_type, config, rng, n_controls, control_mode):
     return bal, ctrl
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
     fname = (f"{args.split}_{args.run}_positional.csv" if args.suffix == "stemfinal"
              else f"{args.split}_{args.run}_positional_{args.suffix}.csv")
-    out_path = output_path_or_skip(args.output_dir, args.model_type, fname, logger)
+    out_path = output_path_or_skip(args.output_dir, args.model_type, fname)
 
     layers = LAYERS if args.suffix == "stemfinal" else [("decoder", i) for i in range(4)]
     cache = os.path.join(args.pooled_cache_dir, args.model_type, f"{args.split}_{args.run}")
     valid_name = "stemfinal_valid.npy" if args.suffix == "stemfinal" else "prealt_valid.npy"
     valid_path = os.path.join(cache, valid_name)
     if not os.path.exists(valid_path):
-        logger.error("No %s readout cache at %s", args.suffix, cache)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"No {args.suffix} readout cache at {cache}")
     valid = np.load(valid_path)
 
     config = load_config(args.config)
@@ -141,13 +133,6 @@ def main():
                     control_balanced_accuracy=ctrl, selectivity=bal - ctrl,
                     n_samples=int(m.sum()),
                 ))
-                logger.info("%s_%d | %s | %s | %s: bal=%.4f ctrl=%.4f sel=%+.4f",
-                            layer_type, layer_index, subset, prop, probe_type,
-                            bal, ctrl, bal - ctrl)
 
-    write_rows(out_path, rows, logger)
+    write_rows(out_path, rows)
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

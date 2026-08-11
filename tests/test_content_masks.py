@@ -1,10 +1,6 @@
-"""Content-mask correctness across architectures.
-
-Locks in the char_sep tag handling: decomposed tag tokens (``V SBJV PRS 1
-PL``) must be excluded from encoder content masks. A bracket-only check
-(``<TAG>``) would never fire in the char_sep vocabulary and would silently
-pool over tags for that architecture.
-"""
+"""Content-mask correctness across architectures. Locks in char_sep tag
+handling: decomposed tag tokens (V SBJV PRS 1 PL) must be excluded from
+encoder content masks; a bracket-only check would silently pool over tags."""
 
 import torch
 

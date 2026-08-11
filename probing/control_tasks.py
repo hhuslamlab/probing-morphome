@@ -1,20 +1,9 @@
 """Hewitt & Liang (2019) control tasks for probe selectivity.
 
-Distinguishes "label is decodable from representations" from "probe is
-expressive enough to memorize the label."  A control task assigns each
-sample a label that is:
-
-  - deterministic: same input -> same control label across runs
-  - structure-preserving: samples sharing the natural equivalence unit
-    (e.g. the same lemma, or the same morphosyntactic tag) receive the
-    same control label
-  - distribution-matched: class marginals match the real labels
-
-selectivity := real_probe_accuracy - control_task_accuracy
-
-A representation that encodes the linguistic property gives a real-vs-control
-gap; a probe that simply has enough capacity to memorize a mapping shrinks
-that gap.
+Control labels are deterministic (hash-seeded per unit and salt),
+structure-preserving (samples sharing a lemma/tag unit share a label), and
+distribution-matched to the real labels. Selectivity is real probe accuracy
+minus control accuracy; a probe that merely memorizes shrinks the gap.
 """
 
 from __future__ import annotations
@@ -59,23 +48,7 @@ def make_control_labels(
     real_labels: Iterable[int],
     salt: str,
 ) -> np.ndarray:
-    """Generate a deterministic, structure-preserving control label per sample.
-
-    Parameters
-    ----------
-    units : per-sample equivalence-unit identifier (e.g. lemma string, tag
-            string).  Samples sharing a unit are guaranteed the same control
-            label.
-    real_labels : per-sample real labels; the class marginal is used to draw
-            the control labels so that majority-baseline accuracy matches.
-    salt : a per-property string mixed into the per-unit seed, so that the
-            same lemma can receive different control labels under different
-            properties.
-
-    Returns
-    -------
-    np.ndarray of int64 control labels, same length as units.
-    """
+    """Control label per sample (seeded by hash of unit and salt; marginals match real labels)."""
     real = np.asarray(list(real_labels))
     classes, counts = np.unique(real, return_counts=True)
     probs = counts / counts.sum()

@@ -1,11 +1,8 @@
 """Generate every quantitative asset in the paper from the result CSVs.
 
-Prints the values behind the paper's tables (balanced accuracy aggregates,
-positional readout) and the transfer/structure numbers, and writes the
-boxplot figures. Pure aggregation: reads only result CSVs, no probing.
-
-IMPORTANT: probe balanced accuracy is aggregated from the per-run CSVs, NOT
-from summary_10L_90NL.csv, whose accuracy_mean column aggregates raw accuracy.
+Prints the paper's table values and writes the boxplot figures; pure
+aggregation, no probing. Probe balanced accuracy is aggregated from the
+per-run CSVs, not from summary_10L_90NL.csv (whose accuracy_mean is raw).
 
 Usage:
   make_paper_assets.py [--no-figures]
@@ -288,7 +285,7 @@ def table_variance_decomposition():
     print(f"  pooled          split={eta2(pooled, 'split'):.2f}  subsample={eta2(pooled, 'sub'):.2f}")
 
 
-def main():
+if __name__ == "__main__":
     from probing.utils.cli import parse
     args = parse(__doc__)
     table_main()
@@ -301,7 +298,3 @@ def main():
     if not args.no_figures:
         boxplot_figure()
         layerwise_boxplot_figure()
-
-
-if __name__ == "__main__":
-    main()

@@ -1,33 +1,10 @@
 """Stem-final-position readout: one vector per instance at the alternation site.
 
-For each instance, locates the STEM-FINAL consonant token of each form (the
-segment that alternates in L-shaped verbs, e.g. the n/ŋɡ site) and reads the
-hidden state at exactly that position:
-
-  encoder layers: mean of the two source forms' stem-final positions
-  decoder layers: the target form's stem-final position
-
-Additionally, for decoder layers only, a PRE-ALTERNANT readout
-(<layer>_prealt.npy): the state at the content position immediately BEFORE
-the target's stem-final consonant. Under teacher forcing the state over
-input character k predicts character k+1, so this is the last state that
-has NOT yet seen the alternant -- decodability here is predictive
-knowledge, not recognition of a just-read segment. Rows whose stem-final
-consonant is the first target character have no pre-alternant content
-position and are marked invalid in prealt_valid.npy.
-
-Positions are recovered by aligning each form's token list (characters plus
-stress marks) with the layer's content mask: the k-th True position of a row's
-content mask corresponds to the k-th form token (tags, separators and
-specials are already excluded by the mask). A per-row count assertion guards
-the alignment; rows that fail it are marked invalid and excluded downstream.
-
-Reads the full representations off the external drive ONCE per layer (like
-pool_representations.py, sequential use only) and caches
-<cache-dir>/<model_type>/<split>_<run>/<layer>_stemfinal.npy   [n, 256]
-plus stemfinal_valid.npy [n] (bool).
-
-Exit codes: 0 ok, 1 error, 2 skipped (all outputs exist).
+Encoder layers average the two source forms' stem-final positions; decoder
+layers take the target's, plus a pre-alternant readout (the state one content
+position earlier, which under teacher forcing has not yet seen the alternant).
+Positions come from aligning form tokens with the content mask; rows failing
+the per-row count check are marked invalid. Exit codes: 0 ok, 1 error, 2 skipped.
 
 Usage:
   pool_stemfinal_position.py --model-type TYPE --split SPLIT --run RUN --representations-dir DIR
@@ -50,12 +27,10 @@ import numpy as np
 import torch
 
 from probing import EXIT_ERROR, EXIT_SKIPPED, EXIT_SUCCESS, MODEL_TYPES, SPLITS
-from probing.analysis_common import LAYERS, setup_logging
+from probing.analysis_common import LAYERS
 from probing.extract_labels import _get_stem
 from probing.run_probes_stemfinal_lnl import get_src_path, get_tgt_path
 from probing.utils.cli import parse, standard_sentinels
-
-logger = setup_logging(__name__)
 
 VOWELS = set("aeiou")
 STRESS = {"ˈ", "ˌ"}
@@ -77,13 +52,7 @@ def form_tokens(segment):
 
 
 def stem_final_token_index(toks):
-    """Index (into toks) of the stem-final consonant of this form.
-
-    The stem is found by suffix-stripping on the joined string; within the
-    stem span, the last non-vowel, non-stress token is the stem-final
-    consonant. Falls back to the last stem token (vowel-final stems), then to
-    the last token of the form.
-    """
+    """Index into toks of the stem-final consonant (falls back to the last stem token)."""
     joined = "".join(toks)
     stem = _get_stem(joined)
     if stem is None:
@@ -104,15 +73,14 @@ def stem_final_token_index(toks):
     return stem_end
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
 
 
     reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     cache_dir = os.path.join(args.cache_dir, args.model_type, f"{args.split}_{args.run}")
     if not os.path.exists(os.path.join(reps_dir, "metadata.json")):
-        logger.error("No representations at %s", reps_dir)
-        sys.exit(EXIT_ERROR)
+        sys.exit(f"No representations at {reps_dir}")
     os.makedirs(cache_dir, exist_ok=True)
 
     targets = [os.path.join(cache_dir, f"{lt}_layer_{li}_stemfinal.npy") for lt, li in LAYERS]
@@ -121,8 +89,7 @@ def main():
     prealt_valid_path = os.path.join(cache_dir, "prealt_valid.npy")
     if (all(os.path.exists(t) for t in targets) and os.path.exists(valid_path)
             and os.path.exists(prealt_valid_path)):
-        logger.info("Skipping %s/%s_%s -- all stemfinal/prealt readouts cached",
-                    args.model_type, args.split, args.run)
+        print(f"Skipping {args.model_type}/{args.split}_{args.run} -- all stemfinal/prealt readouts cached")
         sys.exit(EXIT_SKIPPED)
 
     with open(get_src_path(args.data_dir, args.split, args.run)) as f:
@@ -187,26 +154,15 @@ def main():
             tmp = f"{out}.{os.getpid()}.tmp.npy"
             np.save(tmp, pooled)
             os.replace(tmp, out)
-            logger.info("Saved %s (%d/%d rows aligned)", out, int(row_ok.sum()), n)
         if need_pre:
             tmp = f"{out_pre}.{os.getpid()}.tmp.npy"
             np.save(tmp, pooled_pre)
             os.replace(tmp, out_pre)
-            logger.info("Saved %s", out_pre)
         del reps, mask
 
     np.save(valid_path, valid)
     np.save(prealt_valid_path, valid & (dec_sf_arr > 0))
-    logger.info("prealt-valid rows: %d/%d (stem-final at target position 0 excluded)",
-                int((valid & (dec_sf_arr > 0)).sum()), len(valid))
     frac = float(valid.mean())
-    logger.info("%s/%s_%s: %.4f of rows aligned across all layers",
-                args.model_type, args.split, args.run, frac)
     if frac < 0.99:
-        logger.error("Alignment below 99%% -- investigate before probing")
-        sys.exit(EXIT_ERROR)
+        sys.exit("Alignment below 99%% -- investigate before probing")
     sys.exit(EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

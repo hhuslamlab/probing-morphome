@@ -1,41 +1,11 @@
-"""Extract probing representations from the FAIRSEQ vanilla models.
+"""Extract probing representations from the fairseq vanilla models.
 
-Unlike the other four architectures (character_separated / feature_invariant /
-independent_feature / feature_geometric), whose checkpoints are pickled whole
-``transformer.Transformer`` objects, the *vanilla* checkpoints under
-``checkpoints/vanilla/fixed_checkpoints/<model>-models/`` are **fairseq 0.10.2**
-``transformer`` checkpoints: a plain ``args`` namespace plus a ``model``
-state_dict (``encoder.layers.0.self_attn.q_proj.weight`` etc.).
-
-fairseq is not installed here (it pins Python 3.8.10, incompatible with the
-3.11 venv), so this script reconstructs the fairseq pre-norm transformer forward
-pass in pure PyTorch directly from the state_dict and reuses the existing
-``HookManager``.  The output layout is identical to ``extract_representations.py``
-so the pooling and probe scripts consume it unchanged::
-
-    <output-dir>/vanilla/<split>_<run>/encoder_layer_<i>.pt          [n, src_len, dim]
-                                       encoder_layer_<i>_mask.pt      [n, src_len]  (bool, True=valid)
-                                       encoder_layer_<i>_content_mask.pt
-                                       decoder_layer_<i>.pt           [n, tgt_len, dim]
-                                       decoder_layer_<i>_mask.pt
-                                       decoder_layer_<i>_content_mask.pt
-                                       metadata.json
-
-Only ``*-models`` directories are processed; ``*-models_old`` and
-``*-models_bk`` directories are skipped.  The runless ``10L_90NL-models``
-directory (no ``_<run>`` suffix, no matching test data) is also skipped.
-
-Architecture recovered from the checkpoints (all 15 are identical):
-    arch=transformer, 4 encoder + 4 decoder layers, embed_dim=256, ffn=1024,
-    4 heads, relu, pre-norm (encoder/decoder_normalize_before=True, so a final
-    encoder.layer_norm / decoder.layer_norm), sinusoidal positions, scaled
-    embeddings (no_scale_embedding=False), tied decoder input/output embedding.
-
-fairseq vocab convention (NOTE: differs from dataloader.py's PAD=0,BOS=1,...):
-    bos=<s>=0, pad=<pad>=1, eos=</s>=2, unk=<unk>=3, then dict symbols from 4.
-
-With no arguments, all 15 vanilla models are processed with dicts
-auto-resolved or reconstructed; ``--model`` restricts to one model.
+The vanilla checkpoints are fairseq 0.10.2 ``transformer`` checkpoints (an
+``args`` namespace plus a ``model`` state_dict); fairseq itself is deliberately
+not a dependency (it pins Python 3.8), so the pre-norm transformer forward pass
+is reconstructed in pure PyTorch from the state_dict.  Output layout is
+identical to ``extract_representations.py``, so downstream scripts run unchanged.
+With no arguments all vanilla models are processed; ``--model`` restricts to one.
 
 Usage:
   extract_representations_vanilla.py [--checkpoints-dir DIR] [--checkpoint-name NAME]
@@ -83,11 +53,11 @@ Options:
 
 import glob
 import json
-import logging
 import math
 import os
 import re
 import sys
+import traceback
 
 import torch
 import torch.nn as nn
@@ -98,8 +68,6 @@ from probing.utils.cli import parse, standard_sentinels
 from probing.utils.hooks import HookManager
 from probing.extract_representations import pad_and_concatenate
 
-logger = logging.getLogger("probing.extract_vanilla")
-
 # fairseq Dictionary special symbols, in the order they are added (indices 0-3).
 BOS, PAD, EOS, UNK = "<s>", "<pad>", "</s>", "<unk>"
 BOS_IDX, PAD_IDX, EOS_IDX, UNK_IDX = 0, 1, 2, 3
@@ -108,15 +76,7 @@ _SPECIAL_SYMBOLS = (BOS, PAD, EOS, UNK)
 
 # fairseq Dictionary (load from a dict file, or rebuild it from training data)
 class FairseqDict:
-    """Minimal re-implementation of fairseq's ``Dictionary`` for encoding text.
-
-    Holds the symbol<->index mapping with the four fairseq specials at indices
-    0-3.  Either loaded from a ``dict.<lang>.txt`` file produced by
-    ``fairseq-preprocess`` or reconstructed from a training corpus (see
-    :meth:`from_corpus`), which reproduces fairseq's ``Dictionary.finalize``
-    ordering: symbols sorted by descending count, ties broken by first
-    appearance, padded with ``madeupword*`` to a multiple of ``padding_factor``.
-    """
+    """Minimal re-implementation of fairseq's ``Dictionary`` (the four specials sit at indices 0 to 3)."""
 
     def __init__(self, symbols):
         # symbols: list excluding specials; specials are prepended here.
@@ -127,7 +87,7 @@ class FairseqDict:
         return len(self.symbols)
 
     def encode(self, line, append_eos=True):
-        """Token ids for a whitespace-tokenised line (unknown -> UNK)."""
+        """Token ids for a whitespace-tokenised line (unknown maps to UNK)."""
         ids = [self.token2idx.get(tok, UNK_IDX) for tok in line.split()]
         if append_eos:
             ids.append(EOS_IDX)
@@ -153,14 +113,7 @@ class FairseqDict:
 
     @classmethod
     def from_corpus(cls, corpus_path, padding_factor=8):
-        """Rebuild a fairseq dictionary from a whitespace-tokenised corpus.
-
-        Mirrors fairseq ``Dictionary.finalize``: count tokens, sort by count
-        descending with first-appearance tie-breaking (``collections.Counter``'s
-        ``most_common`` is insertion-stable in CPython 3.7+), then pad the vocab
-        with ``madeupword{:04d}`` entries up to a multiple of ``padding_factor``
-        (the four specials are included in the count for padding).
-        """
+        """Rebuild a fairseq dictionary from a corpus, mirroring ``Dictionary.finalize`` ordering and padding."""
         from collections import Counter
 
         counter = Counter()
@@ -180,22 +133,13 @@ class FairseqDict:
 
 # Pure-PyTorch re-implementation of the fairseq pre-norm transformer
 def _make_positions(tokens, padding_idx):
-    """fairseq ``utils.make_positions``: position ids skipping padding.
-
-    Non-pad tokens get positions ``padding_idx+1, padding_idx+2, ...``; pad
-    tokens get ``padding_idx``.  ``tokens`` is [batch, seq_len].
-    """
+    """fairseq ``utils.make_positions``: position ids skipping padding (non-pad positions start at padding_idx+1)."""
     mask = tokens.ne(padding_idx).int()
     return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
 
 
 class SinusoidalPositionalEmbedding(nn.Module):
-    """fairseq sinusoidal positional embedding (non-learned).
-
-    Holds only the ``_float_tensor`` device-tracking buffer (matching the
-    checkpoint key ``*.embed_positions._float_tensor``); the sinusoid table is
-    computed on the fly and cached.
-    """
+    """fairseq non-learned sinusoidal positional embedding (table built lazily, not stored in the checkpoint)."""
 
     def __init__(self, embedding_dim, padding_idx):
         super().__init__()
@@ -452,27 +396,21 @@ def build_model_from_checkpoint(ckpt, src_vocab, tgt_vocab, device):
 
 # Data handling
 def split_of(model_name):
-    """'50L_50NL_2_1' -> '50L_50NL' (strip the trailing _<run> like _2_1)."""
+    """Split prefix of a model name: '50L_50NL_2_1' gives '50L_50NL'."""
     return re.sub(r"_\d+_\d+$", "", model_name)
 
 
 def run_of(model_name):
-    """'50L_50NL_2_1' -> '2_1'."""
+    """Run suffix of a model name: '50L_50NL_2_1' gives '2_1'."""
     m = re.search(r"_(\d+_\d+)$", model_name)
     return m.group(1) if m else None
 
 
 def resolve_dict(lang, model_name, split, args, explicit_path=None):
-    """Return a FairseqDict for src/tgt, from a dict file if present else rebuilt.
-
-    lang: 'src' or 'tgt'.
-    explicit_path: if given, load this dict file directly (used for models whose
-        dict lives outside the standard data-bin layout, e.g. the naacl25 repo).
-    """
+    """Return (FairseqDict, source_path), from a dict file if present else rebuilt from the training corpus."""
     if explicit_path:
         if not os.path.exists(explicit_path):
             raise FileNotFoundError(f"Explicit {lang} dict not found: {explicit_path}")
-        logger.info("  %s dict: loaded from %s", lang, explicit_path)
         return FairseqDict.from_file(explicit_path), explicit_path
 
     # 1) fairseq data-bin dict file, if a data root was given.
@@ -483,7 +421,6 @@ def resolve_dict(lang, model_name, split, args, explicit_path=None):
             f"dict.{model_name}.{lang}.txt",
         )
         if os.path.exists(dict_path):
-            logger.info("  %s dict: loaded from %s", lang, dict_path)
             return FairseqDict.from_file(dict_path), dict_path
 
     # 2) Reconstruct from the training corpus for that language.
@@ -498,7 +435,6 @@ def resolve_dict(lang, model_name, split, args, explicit_path=None):
         raise FileNotFoundError(
             f"No {lang} dict file and no training corpus to rebuild it: {tried}"
         )
-    logger.info("  %s dict: reconstructed from training corpus %s", lang, corpus)
     return FairseqDict.from_corpus(corpus), corpus
 
 
@@ -508,12 +444,7 @@ def read_lines(path):
 
 
 def make_batches(src_lines, tgt_lines, src_dict, tgt_dict, batch_size):
-    """Yield (src_tokens, prev_output_tokens, target, src_strs, tgt_strs) batches.
-
-    Order is preserved (no length sorting) so rows align with the label / prediction
-    files.  Padding uses PAD_IDX=1.  prev_output_tokens follows fairseq's
-    move-eos-to-beginning: [EOS, t0, ..., t_{n-1}] for target [t0, ..., t_{n-1}, EOS].
-    """
+    """Yield padded batches in corpus order (prev_output_tokens uses fairseq's move-eos-to-beginning)."""
     for start in range(0, len(src_lines), batch_size):
         s_strs = src_lines[start:start + batch_size]
         t_strs = tgt_lines[start:start + batch_size]
@@ -542,19 +473,7 @@ def _is_tag(tok):
 
 
 def content_mask_from_strings(strings, side, seq_len):
-    """Bool mask [n, seq_len], True at character (content) positions.
-
-    Encoder side drops the morphological ``<TAG>`` tokens and the ``#``
-    separators (and trailing EOS / padding); decoder side keeps every generated
-    character (target is IPA characters only) and drops the leading EOS / padding.
-    A position is content iff it carries a real token string that is a character.
-
-    Note: the encoder strings are the raw source lines (no leading BOS — fairseq
-    appends only EOS), so token j lines up with reps position j; the trailing EOS
-    and padding fall beyond ``len(toks)`` and stay False.  The decoder strings are
-    the raw targets, but the decoder input is ``[EOS, t0, ..., t_{n-1}]``, so the
-    j-th target char sits at decoder position j+1 — hence the +1 offset below.
-    """
+    """Bool mask [n, seq_len], True at character positions (decoder positions shifted +1 for the leading EOS)."""
     mask = torch.zeros(len(strings), seq_len, dtype=torch.bool)
     for i, s in enumerate(strings):
         toks = s.split()
@@ -570,8 +489,7 @@ def content_mask_from_strings(strings, side, seq_len):
 
 
 def tag_mask_from_strings(strings, seq_len):
-    """Bool mask [n, seq_len] (encoder side), True at morphological ``<TAG>``
-    positions only — the complement region used by the ``tags`` pool mode."""
+    """Bool mask [n, seq_len], True at encoder ``<TAG>`` positions only."""
     mask = torch.zeros(len(strings), seq_len, dtype=torch.bool)
     for i, s in enumerate(strings):
         for j, tok in enumerate(s.split()):
@@ -584,12 +502,7 @@ def tag_mask_from_strings(strings, seq_len):
 
 # Validation against saved predictions
 def teacher_forced_token_accuracy(logits, target):
-    """Per-token accuracy of teacher-forced argmax over non-pad target positions.
-
-    logits: [tgt_len, batch, vocab] ; target: [batch, tgt_len].  A correct dict +
-    forward pass on these (well-trained) models yields a high value; a wrong dict
-    collapses it toward chance, so this gates silent corruption.
-    """
+    """Return (correct, total) token counts of teacher-forced argmax over non-pad target positions."""
     pred = logits.argmax(-1).transpose(0, 1)  # [batch, tgt_len]
     valid = target.ne(PAD_IDX)
     correct = ((pred == target) & valid).sum().item()
@@ -599,11 +512,7 @@ def teacher_forced_token_accuracy(logits, target):
 
 @torch.no_grad()
 def greedy_decode(model, src_dict, tgt_dict, src_lines, max_len, device):
-    """Autoregressive greedy decode -> list of joined character strings.
-
-    Used only on a small validation subset to compare against the saved
-    predictions_vanilla outputs (which join characters with no spaces).
-    """
+    """Autoregressive greedy decode; returns joined character strings for validation."""
     preds = []
     for line in src_lines:
         src = torch.tensor([src_dict.encode(line, append_eos=True)], device=device)
@@ -629,24 +538,23 @@ def extract_one(model_dir, model_name, args, device):
 
     output_path = os.path.join(args.output_dir, "vanilla", f"{split}_{run}")
     if os.path.exists(os.path.join(output_path, "encoder_layer_0.pt")) and not args.overwrite:
-        logger.info("Skipping %s -- already extracted", model_name)
+        print(f"Skipping {model_name} -- already extracted")
         return EXIT_SKIPPED
 
     # Path overrides (single-model mode) let us point at a checkpoint/dict/test
     # set that lives outside the standard layout (e.g. the naacl25 10L_90NL_1_1).
     checkpoint = args.checkpoint or os.path.join(model_dir, args.checkpoint_name)
     if not os.path.exists(checkpoint):
-        logger.error("Checkpoint not found: %s", checkpoint)
+        print(f"Checkpoint not found: {checkpoint}", file=sys.stderr)
         return EXIT_ERROR
 
     test_src = args.test_src or os.path.join(args.data_dir, split, "test", f"run{run_num}", f"test.{model_name}.src")
     test_tgt = args.test_tgt or os.path.join(args.data_dir, split, "test", f"run{run_num}", f"test.{model_name}.tgt")
     for p in (test_src, test_tgt):
         if not os.path.exists(p):
-            logger.error("Missing test file: %s", p)
+            print(f"Missing test file: {p}", file=sys.stderr)
             return EXIT_ERROR
 
-    logger.info("=== %s (split=%s, run=%s) ===", model_name, split, run)
     src_dict, src_dict_src = resolve_dict("src", model_name, split, args, explicit_path=args.src_dict)
     tgt_dict, tgt_dict_src = resolve_dict("tgt", model_name, split, args, explicit_path=args.tgt_dict)
 
@@ -655,12 +563,7 @@ def extract_one(model_dir, model_name, args, device):
     enc_rows = ckpt["model"]["encoder.embed_tokens.weight"].shape[0]
     dec_rows = ckpt["model"]["decoder.embed_tokens.weight"].shape[0]
     if enc_rows != len(src_dict) or dec_rows != len(tgt_dict):
-        logger.error(
-            "Vocab size mismatch for %s: checkpoint enc/dec=%d/%d vs dict %d/%d "
-            "(src dict from %s, tgt dict from %s). Refusing to extract.",
-            model_name, enc_rows, dec_rows, len(src_dict), len(tgt_dict),
-            src_dict_src, tgt_dict_src,
-        )
+        print(f"Vocab size mismatch for {model_name}: checkpoint enc/dec={enc_rows}/{dec_rows} vs dict {len(src_dict)}/{len(tgt_dict)} (src dict from {src_dict_src}, tgt dict from {tgt_dict_src}). Refusing to extract.", file=sys.stderr)
         return EXIT_ERROR
 
     model = build_model_from_checkpoint(ckpt, len(src_dict), len(tgt_dict), device)
@@ -668,9 +571,8 @@ def extract_one(model_dir, model_name, args, device):
     src_lines = read_lines(test_src)
     tgt_lines = read_lines(test_tgt)
     if len(src_lines) != len(tgt_lines):
-        logger.error("src/tgt line count mismatch: %d vs %d", len(src_lines), len(tgt_lines))
+        print(f"src/tgt line count mismatch: {len(src_lines)} vs {len(tgt_lines)}", file=sys.stderr)
         return EXIT_ERROR
-    logger.info("  test examples: %d", len(src_lines))
 
     hook_manager = HookManager()
     hook_manager.register_hooks(model)
@@ -688,8 +590,7 @@ def extract_one(model_dir, model_name, args, device):
             src_lines, tgt_lines, src_dict, tgt_dict, args.batch_size
         )):
             if bi % log_every == 0:
-                logger.info("  forward %d/%d batches (%d/%d examples)",
-                            bi, n_batches, bi * args.batch_size, len(src_lines))
+                pass
             src = src.to(device)
             prev = prev.to(device)
             target_dev = target.to(device)
@@ -716,11 +617,10 @@ def extract_one(model_dir, model_name, args, device):
     hook_manager.remove_hooks()
 
     if not batch_reps:
-        logger.error("No representations collected for %s", model_name)
+        print(f"No representations collected for {model_name}", file=sys.stderr)
         return EXIT_ERROR
 
     tf_acc = tf_correct / max(tf_total, 1)
-    logger.info("  teacher-forced token accuracy: %.4f (%d/%d)", tf_acc, tf_correct, tf_total)
 
     # Greedy exact-match validation against the GOLD test targets, on a subset.
     # (We compare to the gold target, not predictions_vanilla/*.txt, because those
@@ -734,17 +634,9 @@ def extract_one(model_dir, model_name, args, device):
         gold = ["".join(t.split()) for t in tgt_lines[:n_val]]
         match = sum(1 for a, b in zip(decoded, gold) if a == b)
         greedy_match = match / n_val
-        logger.info(
-            "  greedy exact-match vs gold target: %.4f (%d/%d)",
-            greedy_match, match, n_val,
-        )
 
     if tf_acc < args.min_token_acc:
-        logger.error(
-            "  teacher-forced token accuracy %.4f below threshold %.4f for %s -- "
-            "likely a wrong/mismatched dictionary. NOT writing representations.",
-            tf_acc, args.min_token_acc, model_name,
-        )
+        print(f"  teacher-forced token accuracy {tf_acc:.4f} below threshold {args.min_token_acc:.4f} for {model_name} -- likely a wrong/mismatched dictionary. NOT writing representations.", file=sys.stderr)
         return EXIT_ERROR
 
     # Pad to global max seq_len and concatenate, then save (mirrors extract_representations.py).
@@ -772,7 +664,6 @@ def extract_one(model_dir, model_name, args, device):
         if layer_type == "encoder":
             torch.save(src_tag, os.path.join(output_path, f"{layer_type}_layer_{layer_index}_tag_mask.pt"))
 
-        logger.info("  saved %s_layer_%d: %s", layer_type, layer_index, list(rep.shape))
         if layer_type == "encoder":
             n_enc += 1
         else:
@@ -800,10 +691,6 @@ def extract_one(model_dir, model_name, args, device):
     with open(os.path.join(output_path, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
 
-    logger.info(
-        "  extraction complete: %d samples, %d enc + %d dec layers, dim=%d",
-        n_samples, n_enc, n_dec, embed_dim,
-    )
     return EXIT_SUCCESS
 
 
@@ -816,7 +703,7 @@ def discover_models(checkpoints_dir):
             continue
         model_name = name[: -len("-models")]
         if split_of(model_name) not in SPLITS or run_of(model_name) is None:
-            logger.info("Skipping %s (no <split>_<run> pattern)", name)
+            print(f"Skipping {name} (no <split>_<run> pattern)")
             continue
         keep.append((path, model_name))
     return keep
@@ -832,51 +719,37 @@ def parse_args():
                  sentinels=sentinels)
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
     torch.set_num_threads(max(1, args.num_threads))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info("device: %s, torch threads: %d", device, torch.get_num_threads())
 
     # Explicit single-model mode: a checkpoint path is given for a model that
     # need not live under --checkpoints-dir (e.g. the naacl25 10L_90NL_1_1).
     if args.checkpoint:
         if not args.model:
-            logger.error("--checkpoint requires --model (used for output naming / split+run)")
-            sys.exit(EXIT_ERROR)
+            sys.exit("--checkpoint requires --model (used for output naming / split+run)")
         if split_of(args.model) not in SPLITS or run_of(args.model) is None:
-            logger.error("--model %s must look like <split>_<run> (e.g. 10L_90NL_1_1)", args.model)
-            sys.exit(EXIT_ERROR)
+            sys.exit(f"--model {args.model} must look like <split>_<run> (e.g. 10L_90NL_1_1)")
         models = [(None, args.model)]
     else:
         models = discover_models(args.checkpoints_dir)
         if args.model:
             models = [(p, m) for p, m in models if m == args.model]
             if not models:
-                logger.error("Model %s not found among vanilla -models dirs", args.model)
-                sys.exit(EXIT_ERROR)
+                sys.exit(f"Model {args.model} not found among vanilla -models dirs")
 
-    logger.info("Processing %d vanilla model(s)", len(models))
     results = {EXIT_SUCCESS: 0, EXIT_SKIPPED: 0, EXIT_ERROR: 0}
     failed = []
     for model_dir, model_name in models:
         try:
             code = extract_one(model_dir, model_name, args, device)
         except Exception:  # noqa: BLE001
-            logger.exception("Extraction failed for %s", model_name)
+            traceback.print_exc()
+            print(f"Extraction failed for {model_name}", file=sys.stderr)
             code = EXIT_ERROR
         results[code] = results.get(code, 0) + 1
         if code == EXIT_ERROR:
             failed.append(model_name)
 
-    logger.info(
-        "Done: %d extracted, %d skipped, %d failed%s",
-        results[EXIT_SUCCESS], results[EXIT_SKIPPED], results[EXIT_ERROR],
-        (" (" + ", ".join(failed) + ")") if failed else "",
-    )
     sys.exit(EXIT_ERROR if failed else EXIT_SUCCESS)
-
-
-if __name__ == "__main__":
-    main()

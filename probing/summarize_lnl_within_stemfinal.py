@@ -1,14 +1,8 @@
 """Aggregate + plot the L-vs-NL-within-stem-final probe results.
 
-Reads the per-(arch, run) CSVs written by run_probes_lnl_within_stemfinal.py and
-produces:
-
-  1. summary_<split>.csv -- one row per (arch, subset, layer, probe_type) with
-     balanced accuracy / selectivity / control / raw accuracy MEAN and STD across
-     the runs (the std is the cross-test-set spread).
-  2. trajectory_<split>.png -- balanced-accuracy-by-layer trajectories, one panel
-     per subset, one line per architecture (linear probe; shaded +/- run std),
-     with the chance line (0.5) and the per-subset majority baseline marked.
+Reads the per-(arch, run) CSVs written by run_probes_lnl_within_stemfinal.py
+and writes summary_<split>.csv (mean/std across runs) plus balanced-accuracy
+trajectory plots, one panel per subset, with chance and baselines marked.
 
 Usage:
   summarize_lnl_within_stemfinal.py [--results-dir DIR] [--split SPLIT]
@@ -68,13 +62,7 @@ def load_all(results_dir):
 
 
 def load_baselines(baselines_dir):
-    """Load surface n-gram baseline CSVs (run_ngram_baselines.py), or None.
-
-    Aggregated separately from the probe frame: baseline rows have
-    layer_type='ngram' (layer_key cannot place them on the encoder/decoder
-    axis) and encode view+order in probe_type (e.g. 'ngram2-src', 'lm3-tgt').
-    The pseudo-arch subdirectory name ('ngram', 'infinigram') becomes arch.
-    """
+    """Load surface n-gram baseline summary rows, or None (probe_type encodes view+order)."""
     frames = []
     for f in sorted(glob.glob(os.path.join(baselines_dir, "*", "*_lnl_within_stemfinal.csv"))):
         df = pd.read_csv(f)
@@ -100,7 +88,7 @@ def parse_args():
     return parse(__doc__, choices=dict(probe_type=("linear", "mlp")))
 
 
-def main():
+if __name__ == "__main__":
     args = parse_args()
 
     df = load_all(args.results_dir)
@@ -174,7 +162,3 @@ def main():
     png_path = os.path.join(args.results_dir, f"trajectory_{args.split}_{args.probe_type}.png")
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     print(f"Wrote {png_path}")
-
-
-if __name__ == "__main__":
-    main()
