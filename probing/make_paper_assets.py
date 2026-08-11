@@ -1,7 +1,7 @@
 """Generate every quantitative asset in the paper from the result CSVs.
 
 Prints the values behind the paper's tables (balanced accuracy aggregates,
-positional readout) and the transfer/nonce/structure numbers, and writes the
+positional readout) and the transfer/structure numbers, and writes the
 boxplot figures. Pure aggregation: reads only result CSVs, no probing.
 
 IMPORTANT: probe balanced accuracy is aggregated from the per-run CSVs, NOT
@@ -118,27 +118,11 @@ def table_transfer():
             print(f"    {LABELS[key[0]]:<15} {layer} {r.m:.3f}±{r.sd:.3f} sel={r.sel:+.3f}")
 
 
-def table_nonce():
-    print("\n=== Nonce: fraction classified L (per layer, 12-model mean) ===")
-    frames = []
-    for a in ARCHS:
-        for f in glob.glob(f"data/probing/results_nonce/{a}/*_nonce.csv"):
-            d = pd.read_csv(f)
-            d["arch"] = a
-            frames.append(d)
-    df = pd.concat(frames)
-    df["layer"] = df.layer_type.str[:3] + df.layer_index.astype(str)
-    g = df.groupby(["arch", "layer"]).frac_classified_L.mean().reset_index()
-    for a in ARCHS:
-        s = g[g.arch == a].set_index("layer")
-        print(f"  {LABELS[a]:<15} " + " ".join(f"{s.loc[l, 'frac_classified_L']:.2f}"
-                                               for l in LAY))
-
-
 def boxplot_figure():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    os.makedirs("paper/figures", exist_ok=True)
     df = load_per_run("data/probing/results_stemfinal_lnl_grouped/{arch}/*_results.control.csv")
     df = df[df.probe_type == "linear"]
     bl = pd.concat([pd.read_csv(f) for f in glob.glob(
@@ -204,6 +188,7 @@ def layerwise_boxplot_figure():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    os.makedirs("paper/figures", exist_ok=True)
     df = load_per_run("data/probing/results_stemfinal_lnl_grouped/{arch}/*_results.control.csv")
     df = df[df.probe_type == "linear"]
     ws = pd.read_csv("data/probing/results_lnl_within_stemfinal/summary_10L_90NL.csv")
@@ -311,7 +296,6 @@ def main():
     table_positional()
     table_prealt()
     table_transfer()
-    table_nonce()
     table_structure()
     table_variance_decomposition()
     if not args.no_figures:

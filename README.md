@@ -1,7 +1,7 @@
 # Probing Character-level Transformers for the Spanish L-shaped Morphome
 
-Code and result data for the probing experiments in *Probing Character-level
-Transformers for the Spanish L-shaped Morphome*. 
+Code and result data for the probing experiments in [*Probing Character-level
+Transformers for the Spanish L-shaped Morphome*](https://arxiv.org/abs/2608.03452).
 
 ## Layout
 
@@ -18,7 +18,6 @@ probing/
   run_probes_positional.py             # stem-final-position readout probes
   run_ngram_baselines.py               # surface n-gram + class-conditional LM baselines
   run_transfer_probe.py                # cross-subset transfer probes
-  run_nonce_probe.py                   # nonce (wug) verb probing
   run_morphome_structure.py            # cell clustering + conjugation control
   summarize_stemfinal_lnl.py           # summary CSVs + trajectory plots
   summarize_lnl_within_stemfinal.py    # summary for the within-stem-final probes
@@ -45,7 +44,7 @@ python -m probing.run_probes_stemfinal_lnl --help
 
 ## Reproduction
 
-`reproduce_probing.sh` is the entry point; each stage maps to a Methodology
+`reproduce_probing.sh` is the entry point; each stage maps to a
 subsection of the paper and is idempotent (safe to re-run and resume):
 
 ```bash

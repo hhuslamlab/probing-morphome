@@ -1,4 +1,4 @@
-"""Shared plumbing for the analysis drivers (positional, transfer, nonce, structure).
+"""Shared plumbing for the analysis drivers (positional, transfer, structure).
 
 Every driver follows the same shape: parse args, skip if its output CSV
 exists, load labels and lemma groups, iterate the 8 layers, compute rows,

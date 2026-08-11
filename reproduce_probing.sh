@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Reproducible pipeline for the probing paper, one stage per Methodology
-# subsection. Every stage is idempotent (per-output self-skip), so
-# the script is safe to re-run and to resume after interruption.
+# Reproducible pipeline for the probing paper (arXiv:2608.03452). Every stage
+# is idempotent (per-output self-skip), so the script is safe to re-run and to
+# resume after interruption.
 #
 #   bash reproduce_probing.sh all            # everything, in order
 #   bash reproduce_probing.sh probes assets  # selected stages
 #   ARCHS="vanilla" RUNS="1_2" bash reproduce_probing.sh probes
 #
-# Stages (-> paper section):
-#   extract    §3.4  representation extraction        [drive + checkpoints]
-#   pool       §3.5  content-mean pooling              [drive, SEQUENTIAL]
-#   probes     §3.6-3.8 linear/MLP probes + controls   [local cache]
-#   baselines  §3.11 surface n-gram + LM baselines     [text only]
-#   within     §3.12 L/NL within stem-final subsets    [drive]
-#   positional §3.14 stem-final-position readout       [drive for pooling]
-#   transfer   §3.15 cross-subset transfer             [local cache]
-#   nonce      §3.16 nonce-verb probing                [checkpoints]
-#   structure  §3.13 cell clustering + conjugation ctrl [local cache]
-#   summarize  §4    summary CSVs + trajectory plots
-#   assets     §4    paper tables printout + figures
-#   test       —     pytest suite for the analysis code
+# Stages (-> paper section, https://arxiv.org/abs/2608.03452):
+#   extract    §3.3   representation extraction         [drive + checkpoints]
+#   pool       §3.3   content-mean pooling              [drive, SEQUENTIAL]
+#   probes     §4.1.1 linear probes + controls          [local cache]
+#   baselines  §4.1.1 surface n-gram + LM baselines     [text only]
+#   within     §4.1.3 L/NL within no-alternation subset [drive]
+#   positional §4.2   stem-final-position + pre-alternant readouts [drive for pooling]
+#   transfer   §4.1.3 cross-subset transfer             [local cache]
+#   structure  §4.2   paradigm-configuration (cell clustering) probe [local cache]
+#   summarize  §4     summary CSVs + trajectory plots
+#   assets     §4     paper tables printout + figures
+#   test       —      pytest suite for the analysis code
 #
 # Hardware notes: stages marked [drive] stream multi-GB tensors from
 # REPS_DIR; run them sequentially and never in parallel with each other.
@@ -53,7 +52,14 @@ log() { echo "[reproduce $(date +%H:%M:%S)] $*"; }
 need_drive() {
   if [ -z "$REPS_DIR" ] || [ ! -d "$REPS_DIR" ]; then
     log "SKIP $1: representations not available (set REPS_DIR)"
-    return 1
+    return 2
+  fi
+}
+
+need_fi() {
+  if [ ! -d "$FEATURE_INFORMED_ROOT/data" ]; then
+    log "SKIP $1: training data not available (set FEATURE_INFORMED_ROOT)"
+    return 2
   fi
 }
 
@@ -67,7 +73,7 @@ sweep() {
     rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ] || echo "FAILED: '"$module"' $0/$1 (exit $rc)"'
 }
 
-stage_extract() {  # §3.4 — see the per-architecture extractors for data layout
+stage_extract() {  # §3.3 — see the per-architecture extractors for data layout
   need_drive extract || return
   for a in "${ARCHS[@]}"; do for r in "${RUNS[@]}"; do
     case "$a" in
@@ -99,7 +105,7 @@ stage_extract() {  # §3.4 — see the per-architecture extractors for data layo
   done; done
 }
 
-stage_pool() {  # §3.5 — sequential: concurrent multi-GB reads thrash the drive
+stage_pool() {  # §3.3 — sequential: concurrent multi-GB reads thrash the drive
   need_drive pool || return
   for a in "${ARCHS[@]}"; do for r in "${RUNS[@]}"; do
     python -u -m probing.pool_representations --model-type "$a" \
@@ -108,14 +114,14 @@ stage_pool() {  # §3.5 — sequential: concurrent multi-GB reads thrash the dri
   done; done
 }
 
-stage_probes() {  # §3.6-3.8 — balanced accuracy, lemma-disjoint folds, controls
+stage_probes() {  # §4.1.1 — balanced accuracy, lemma-disjoint folds, controls
   sweep probing.run_probes_stemfinal_lnl \
     --data-dir "$FEATURE_INFORMED_ROOT/data" \
     --pooled-cache-dir data/probing/pooled_cache --n-jobs 2 \
     --control --n-controls 5
 }
 
-stage_baselines() {  # §3.11 — classifier baselines depend only on the lemma
+stage_baselines() {  # §4.1.1 — classifier baselines depend only on the lemma
   # split, so one run per split suffices; the LM refits per fold regardless.
   for r in 1_1 2_2 3_2; do
     python -u -m probing.run_ngram_baselines --split "$SPLIT" --run "$r" \
@@ -124,13 +130,13 @@ stage_baselines() {  # §3.11 — classifier baselines depend only on the lemma
   done
 }
 
-stage_within() {  # §3.12 — reads representations directly (drive)
+stage_within() {  # §4.1.3 — reads representations directly (drive)
   need_drive within || return
   sweep probing.run_probes_lnl_within_stemfinal \
     --representations-dir "$REPS_DIR" --n-jobs 1
 }
 
-stage_positional() {  # §3.14 — pooling pass is sequential (drive), probes local
+stage_positional() {  # §4.2 — pooling pass is sequential (drive), probes local
   need_drive positional || return
   for a in "${ARCHS[@]}"; do for r in "${RUNS[@]}"; do
     python -u -m probing.pool_stemfinal_position --model-type "$a" \
@@ -141,16 +147,11 @@ stage_positional() {  # §3.14 — pooling pass is sequential (drive), probes lo
   sweep probing.run_probes_positional --suffix prealt
 }
 
-stage_transfer() {  # §3.15 — local pooled cache only
+stage_transfer() {  # §4.1.3 — local pooled cache only
   sweep probing.run_transfer_probe
 }
 
-stage_nonce() {  # §3.16 — re-extracts the 120 wug items per model (checkpoints)
-  python -u -m probing.run_nonce_probe --prepare
-  sweep probing.run_nonce_probe
-}
-
-stage_structure() {  # §3.13 morphome-structure probes (cell clustering + conjugation control)
+stage_structure() {  # §4.2 paradigm-configuration probe (results §4.3.1)
   sweep probing.run_morphome_structure
 }
 
@@ -168,9 +169,10 @@ stage_test() {
 }
 
 STAGES=${*:-all}
-[ "$STAGES" = "all" ] && STAGES="extract pool probes baselines within positional transfer nonce structure summarize assets test"
+[ "$STAGES" = "all" ] && STAGES="extract pool probes baselines within positional transfer structure summarize assets test"
 for s in $STAGES; do
   log "=== stage: $s ==="
-  "stage_$s" || log "stage $s reported an error"
+  "stage_$s"; rc=$?
+  [ $rc -eq 0 ] || [ $rc -eq 2 ] || log "stage $s reported an error"
 done
 log "done"

@@ -5,7 +5,6 @@ data/probing/*
 !data/probing/results_lnl_within_stemfinal/
 !data/probing/results_positional/
 !data/probing/results_transfer/
-!data/probing/results_nonce/
 !data/probing/results_structure/
 !data/probing/results_ngram_baselines_balanced/
 *superseded*/

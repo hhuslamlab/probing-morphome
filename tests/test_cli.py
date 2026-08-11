@@ -18,7 +18,6 @@ import probing.make_paper_assets as assets
 import probing.pool_representations as pool
 import probing.pool_stemfinal_position as posp
 import probing.run_ngram_baselines as ngram
-import probing.run_nonce_probe as nonce
 import probing.run_probes_lnl_within_stemfinal as within
 import probing.run_probes_positional as pospr
 import probing.run_probes_stemfinal_lnl as probes
@@ -45,12 +44,6 @@ class TestDocstringsParse:
         assert a["--n-controls"] == "5"
         assert a["--model-type"] == "vanilla"
         assert a["--seed"] == "42"  # default from Options block
-
-    def test_nonce_model_mode_and_prepare_mode(self):
-        a = docopt(nonce.__doc__, argv=STANDARD)
-        assert not a["--prepare"]
-        b = docopt(nonce.__doc__, argv=["--prepare"])
-        assert b["--prepare"] and b["--model-type"] is None
 
     def test_assets(self):
         a = docopt(assets.__doc__, argv=["--no-figures"])
