@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract hidden state representations from a single model configuration.
 
 Usage:

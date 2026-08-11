@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Cross-subset transfer probe: does ONE L/NL representation span both regimes?
 
 Trains the L-vs-NL probe on instances where the stem alternation is VISIBLE

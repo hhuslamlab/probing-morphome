@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Nonce-verb (wug) probing: do models internally classify novel alternating
 stems as L-shaped?
 

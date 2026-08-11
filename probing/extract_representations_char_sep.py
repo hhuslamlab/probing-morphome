@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract hidden-state representations from the *char_sep* (fairseq) models.
 
 The character-separated models in ``checkpoints/char_sep/seperate_char_checkpoints/``

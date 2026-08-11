@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Stem-final-position readout: one vector per instance at the alternation site.
 
 For each instance, locates the STEM-FINAL consonant token of each form (the

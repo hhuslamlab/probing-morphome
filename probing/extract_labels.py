@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract morphological property labels from test data.
 
 Usage:

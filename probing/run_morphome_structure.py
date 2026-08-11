@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Morphome-structure probes: cell clustering and L/NL within non-ar verbs.
 
 Two analyses addressing the structural half of the morphome question, run on

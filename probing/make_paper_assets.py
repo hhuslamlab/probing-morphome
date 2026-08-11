@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate every quantitative asset in the paper from the result CSVs.
 
 Prints the values behind the paper's tables (balanced accuracy aggregates,

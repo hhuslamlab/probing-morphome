@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Probes on the stem-final-position readout (pool_stemfinal_position.py).
 
 Same protocol as run_probes_stemfinal_lnl.py — linear + MLP probes, 5-fold

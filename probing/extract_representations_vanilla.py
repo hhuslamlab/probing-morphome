@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract probing representations from the FAIRSEQ vanilla models.
 
 Unlike the other four architectures (character_separated / feature_invariant /
