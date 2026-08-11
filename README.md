@@ -1,0 +1,55 @@
+# Probing Character-level Transformers for the Spanish L-shaped Morphome
+
+Code and result data for the probing experiments in *Probing Character-level
+Transformers for the Spanish L-shaped Morphome*. 
+
+## Layout
+
+```
+probing/
+  extract_representations.py           # extractor: pickled in-house transformer checkpoints
+  extract_representations_vanilla.py   # extractor: fairseq vanilla checkpoints (pure-PyTorch reimpl.)
+  extract_representations_char_sep.py  # extractor: fairseq char-separated checkpoints
+  extract_labels.py                    # morphological property labels from .src/.tgt test files
+  pool_representations.py              # content-mean pooling into a compact local cache
+  pool_stemfinal_position.py           # stem-final position pooling (positional readout)
+  run_probes_stemfinal_lnl.py          # main probes: stem_final_match / conjugation / l_shaped
+  run_probes_lnl_within_stemfinal.py   # L vs NL within stem-final subsets
+  run_probes_positional.py             # stem-final-position readout probes
+  run_ngram_baselines.py               # surface n-gram + class-conditional LM baselines
+  run_transfer_probe.py                # cross-subset transfer probes
+  run_nonce_probe.py                   # nonce (wug) verb probing
+  run_morphome_structure.py            # cell clustering + conjugation control
+  summarize_stemfinal_lnl.py           # summary CSVs + trajectory plots
+  summarize_lnl_within_stemfinal.py    # summary for the within-stem-final probes
+  make_paper_assets.py                 # paper tables and figures
+  control_tasks.py, analysis_common.py, utils/, config.json
+tests/                                 # pytest suite for the analysis code
+data/probing/results_*/                # result CSVs behind the paper's numbers (tracked)
+reproduce_probing.sh                   # stage-by-stage reproduction driver
+```
+
+## Installation
+
+Python 3.11:
+
+```bash
+pip install -r requirements.txt
+```
+
+All modules are run as a package from the repo root:
+
+```bash
+python -m probing.run_probes_stemfinal_lnl --help
+```
+
+## Reproduction
+
+`reproduce_probing.sh` is the entry point; each stage maps to a Methodology
+subsection of the paper and is idempotent (safe to re-run and resume):
+
+```bash
+bash reproduce_probing.sh all            # everything, in order
+bash reproduce_probing.sh probes assets  # selected stages
+```
+

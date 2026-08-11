@@ -1,0 +1,15 @@
+{
+  "probe": {
+    "linear": {
+      "C": 1.0,
+      "max_iter": 500,
+      "solver": "lbfgs"
+    },
+    "mlp": {
+      "hidden_layer_sizes": [10],
+      "max_iter": 300
+    },
+    "cv_folds": 5,
+    "random_seed": 42
+  }
+}
