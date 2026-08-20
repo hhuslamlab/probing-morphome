@@ -41,7 +41,6 @@ Options:
 
 import math
 import os
-import sys
 from collections import Counter
 
 import numpy as np
@@ -56,7 +55,7 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 
-from probing import EXIT_ERROR, EXIT_SKIPPED, EXIT_SUCCESS, SPLITS
+from probing import EXIT_SKIPPED, SPLITS
 from probing.utils.cli import parse, standard_sentinels
 from probing.run_probes_lnl_within_stemfinal import (
     CSV_COLUMNS as WITHIN_CSV_COLUMNS,
@@ -227,7 +226,7 @@ def parse_args():
     args.baselines = args.baselines.split()
     bad = set(args.baselines) - set(BASELINE_FAMILIES)
     if bad:
-        raise SystemExit(f"invalid --baselines: {sorted(bad)} (choose from {list(BASELINE_FAMILIES)})")
+        raise ValueError(f"invalid --baselines: {sorted(bad)} (choose from {list(BASELINE_FAMILIES)})")
     return args
 
 
@@ -253,7 +252,7 @@ def run_baseline_rows(
 
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (< 2 classes)", file=sys.stderr)
+        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (< 2 classes)")
         return []
     # Cap folds by the sparsest class (per-class sample count for plain
     # stratified folds, per-class lemma-group count for grouped folds) — NOT by
@@ -265,7 +264,7 @@ def run_baseline_rows(
         per_class_groups = min(len(np.unique(groups[y == c])) for c in classes)
         n_folds = min(cv_folds, per_class_groups)
     if n_folds < 2:
-        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (n_folds<2)", file=sys.stderr)
+        print(f"WARNING:   ngram_{order} | {probe_site} | {property_name}: skipping (n_folds<2)")
         return []
 
     _, counts = np.unique(y, return_counts=True)
@@ -358,11 +357,11 @@ def within_subset_rows(
     n, n_L, n_NL, g_L, g_NL, majority = subset_stats(y, groups)
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (only {n_classes} class)", file=sys.stderr)
+        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (only {n_classes} class)")
         return []
     n_folds = min(config["probe"]["cv_folds"], min(g_L, g_NL))
     if n_folds < 2:
-        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (n_folds<2: L lemmas={g_L}, NL lemmas={g_NL})", file=sys.stderr)
+        print(f"WARNING:   ngram_{order} | {subset_name} | {probe_type_label}: skipping (n_folds<2: L lemmas={g_L}, NL lemmas={g_NL})")
         return []
 
     seed = config["probe"]["random_seed"]
@@ -430,17 +429,17 @@ if __name__ == "__main__":
     path_b = os.path.join(output_dir, f"{args.split}_{args.run}_lnl_within_stemfinal{variant}.csv")
     if os.path.exists(path_a) and os.path.exists(path_b):
         print(f"Skipping ngram/{args.split}_{args.run} -- results already exist")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     if not os.path.exists(args.config):
-        sys.exit(f"Config not found: {args.config}")
+        raise FileNotFoundError(f"Config not found: {args.config}")
     config = load_config(args.config)
 
     src_path = get_src_path(args.data_dir, args.split, args.run)
     tgt_path = get_tgt_path(args.data_dir, args.split, args.run)
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            sys.exit(f"Data file not found: {path}")
+            raise FileNotFoundError(f"Data file not found: {path}")
 
     labels = build_property_labels(src_path, tgt_path, args.data_dir)
     for prop, y in labels.items():
@@ -453,7 +452,7 @@ if __name__ == "__main__":
     views = build_texts(src_lines, tgt_lines, with_tags=args.with_tags)
     for name, texts in views.items():
         if len(texts) != len(labels["l_shaped"]):
-            sys.exit(f"View {name} has {len(texts)} rows, labels have {len(labels['l_shaped'])}")
+            raise ValueError(f"View {name} has {len(texts)} rows, labels have {len(labels['l_shaped'])}")
 
     groups = build_lemma_groups(args.data_dir, args.split, args.run)
     seed = config["probe"]["random_seed"]
@@ -560,4 +559,3 @@ if __name__ == "__main__":
         f.write(",".join(WITHIN_CSV_COLUMNS) + "\n")
         for row in rows_b:
             f.write(",".join(str(row[c]) for c in WITHIN_CSV_COLUMNS) + "\n")
-    sys.exit(EXIT_SUCCESS)

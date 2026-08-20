@@ -38,13 +38,12 @@ Options:
 """
 
 import os
-import sys
 
 import numpy as np
 import torch
 from sklearn.model_selection import StratifiedGroupKFold, cross_validate
 
-from probing import EXIT_ERROR, EXIT_SKIPPED, EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import EXIT_SKIPPED, MODEL_TYPES, SPLITS
 from probing.extract_labels import LSHAPED_MAP, STEMFINAL_MATCH_MAP
 from probing.utils.cli import parse, standard_sentinels
 from probing.run_probes_stemfinal_lnl import (
@@ -91,14 +90,14 @@ def probe_subset(X, y, groups, subset_name, layer_type, layer_index, config, rng
     n, n_L, n_NL, g_L, g_NL, majority = subset_stats(y, groups)
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name}: skipping (only {n_classes} class in {n} samples)", file=sys.stderr)
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name}: skipping (only {n_classes} class in {n} samples)")
         return []
 
     # StratifiedGroupKFold needs each class represented; the rarer class's lemma
     # count (min(g_L, g_NL)) caps usable folds.
     n_folds = min(config["probe"]["cv_folds"], min(g_L, g_NL))
     if n_folds < 2:
-        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name}: skipping (n_folds<2: L lemmas={g_L}, NL lemmas={g_NL})", file=sys.stderr)
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name}: skipping (n_folds<2: L lemmas={g_L}, NL lemmas={g_NL})")
         return []
 
     seed = config["probe"]["random_seed"]
@@ -177,16 +176,16 @@ if __name__ == "__main__":
     )
     if os.path.exists(output_path):
         print(f"Skipping {args.model_type}/{args.split}_{args.run} -- results already exist")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     if not os.path.exists(args.config):
-        sys.exit(f"Config not found: {args.config}")
+        raise FileNotFoundError(f"Config not found: {args.config}")
     config = load_config(args.config)
 
     reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     metadata_path = os.path.join(reps_dir, "metadata.json")
     if not os.path.exists(metadata_path):
-        sys.exit(f"Representations not found: {reps_dir}")
+        raise FileNotFoundError(f"Representations not found: {reps_dir}")
     import json
     with open(metadata_path) as f:
         metadata = json.load(f)
@@ -198,14 +197,14 @@ if __name__ == "__main__":
     tgt_path = get_tgt_path(args.data_dir, args.split, args.run)
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            sys.exit(f"Data file not found: {path}")
+            raise FileNotFoundError(f"Data file not found: {path}")
 
     labels = build_property_labels(src_path, tgt_path, args.data_dir)
     stem_final_match = labels["stem_final_match"]
     l_shaped = labels["l_shaped"]
     for name, y in (("stem_final_match", stem_final_match), ("l_shaped", l_shaped)):
         if len(y) != n_samples:
-            sys.exit(f"Sample count mismatch for {name}: data={len(y)} reps={n_samples}")
+            raise ValueError(f"Sample count mismatch for {name}: data={len(y)} reps={n_samples}")
 
     groups = build_lemma_groups(args.data_dir, args.split, args.run)
 
@@ -220,12 +219,12 @@ if __name__ == "__main__":
     for layer_type, layer_index in layers:
         rep_path = os.path.join(reps_dir, f"{layer_type}_layer_{layer_index}.pt")
         if not os.path.exists(rep_path):
-            print(f"WARNING: Skipping {layer_type}_{layer_index}: missing rep file", file=sys.stderr)
+            print(f"WARNING: Skipping {layer_type}_{layer_index}: missing rep file")
             continue
         reps = torch.load(rep_path, weights_only=False)
         mask = load_pool_mask(reps_dir, layer_type, layer_index, args.pool_positions)
         if mask is None:
-            print(f"WARNING: Skipping {layer_type}_{layer_index}: missing mask file", file=sys.stderr)
+            print(f"WARNING: Skipping {layer_type}_{layer_index}: missing mask file")
             continue
         X_full = pool_reps(reps, mask, args.pool_positions).numpy()
 
@@ -243,4 +242,3 @@ if __name__ == "__main__":
         f.write(",".join(CSV_COLUMNS) + "\n")
         for row in all_results:
             f.write(",".join(str(row[c]) for c in CSV_COLUMNS) + "\n")
-    sys.exit(EXIT_SUCCESS)

@@ -56,7 +56,6 @@ import json
 import math
 import os
 import re
-import sys
 import traceback
 
 import torch
@@ -545,14 +544,14 @@ def extract_one(model_dir, model_name, args, device):
     # set that lives outside the standard layout (e.g. the naacl25 10L_90NL_1_1).
     checkpoint = args.checkpoint or os.path.join(model_dir, args.checkpoint_name)
     if not os.path.exists(checkpoint):
-        print(f"Checkpoint not found: {checkpoint}", file=sys.stderr)
+        print(f"Checkpoint not found: {checkpoint}")
         return EXIT_ERROR
 
     test_src = args.test_src or os.path.join(args.data_dir, split, "test", f"run{run_num}", f"test.{model_name}.src")
     test_tgt = args.test_tgt or os.path.join(args.data_dir, split, "test", f"run{run_num}", f"test.{model_name}.tgt")
     for p in (test_src, test_tgt):
         if not os.path.exists(p):
-            print(f"Missing test file: {p}", file=sys.stderr)
+            print(f"Missing test file: {p}")
             return EXIT_ERROR
 
     src_dict, src_dict_src = resolve_dict("src", model_name, split, args, explicit_path=args.src_dict)
@@ -563,7 +562,7 @@ def extract_one(model_dir, model_name, args, device):
     enc_rows = ckpt["model"]["encoder.embed_tokens.weight"].shape[0]
     dec_rows = ckpt["model"]["decoder.embed_tokens.weight"].shape[0]
     if enc_rows != len(src_dict) or dec_rows != len(tgt_dict):
-        print(f"Vocab size mismatch for {model_name}: checkpoint enc/dec={enc_rows}/{dec_rows} vs dict {len(src_dict)}/{len(tgt_dict)} (src dict from {src_dict_src}, tgt dict from {tgt_dict_src}). Refusing to extract.", file=sys.stderr)
+        print(f"Vocab size mismatch for {model_name}: checkpoint enc/dec={enc_rows}/{dec_rows} vs dict {len(src_dict)}/{len(tgt_dict)} (src dict from {src_dict_src}, tgt dict from {tgt_dict_src}). Refusing to extract.")
         return EXIT_ERROR
 
     model = build_model_from_checkpoint(ckpt, len(src_dict), len(tgt_dict), device)
@@ -571,7 +570,7 @@ def extract_one(model_dir, model_name, args, device):
     src_lines = read_lines(test_src)
     tgt_lines = read_lines(test_tgt)
     if len(src_lines) != len(tgt_lines):
-        print(f"src/tgt line count mismatch: {len(src_lines)} vs {len(tgt_lines)}", file=sys.stderr)
+        print(f"src/tgt line count mismatch: {len(src_lines)} vs {len(tgt_lines)}")
         return EXIT_ERROR
 
     hook_manager = HookManager()
@@ -617,7 +616,7 @@ def extract_one(model_dir, model_name, args, device):
     hook_manager.remove_hooks()
 
     if not batch_reps:
-        print(f"No representations collected for {model_name}", file=sys.stderr)
+        print(f"No representations collected for {model_name}")
         return EXIT_ERROR
 
     tf_acc = tf_correct / max(tf_total, 1)
@@ -636,7 +635,7 @@ def extract_one(model_dir, model_name, args, device):
         greedy_match = match / n_val
 
     if tf_acc < args.min_token_acc:
-        print(f"  teacher-forced token accuracy {tf_acc:.4f} below threshold {args.min_token_acc:.4f} for {model_name} -- likely a wrong/mismatched dictionary. NOT writing representations.", file=sys.stderr)
+        print(f"  teacher-forced token accuracy {tf_acc:.4f} below threshold {args.min_token_acc:.4f} for {model_name} -- likely a wrong/mismatched dictionary. NOT writing representations.")
         return EXIT_ERROR
 
     # Pad to global max seq_len and concatenate, then save (mirrors extract_representations.py).
@@ -728,16 +727,16 @@ if __name__ == "__main__":
     # need not live under --checkpoints-dir (e.g. the naacl25 10L_90NL_1_1).
     if args.checkpoint:
         if not args.model:
-            sys.exit("--checkpoint requires --model (used for output naming / split+run)")
+            raise ValueError("--checkpoint requires --model (used for output naming / split+run)")
         if split_of(args.model) not in SPLITS or run_of(args.model) is None:
-            sys.exit(f"--model {args.model} must look like <split>_<run> (e.g. 10L_90NL_1_1)")
+            raise ValueError(f"--model {args.model} must look like <split>_<run> (e.g. 10L_90NL_1_1)")
         models = [(None, args.model)]
     else:
         models = discover_models(args.checkpoints_dir)
         if args.model:
             models = [(p, m) for p, m in models if m == args.model]
             if not models:
-                sys.exit(f"Model {args.model} not found among vanilla -models dirs")
+                raise FileNotFoundError(f"Model {args.model} not found among vanilla -models dirs")
 
     results = {EXIT_SUCCESS: 0, EXIT_SKIPPED: 0, EXIT_ERROR: 0}
     failed = []
@@ -746,10 +745,10 @@ if __name__ == "__main__":
             code = extract_one(model_dir, model_name, args, device)
         except Exception:  # noqa: BLE001
             traceback.print_exc()
-            print(f"Extraction failed for {model_name}", file=sys.stderr)
+            print(f"Extraction failed for {model_name}")
             code = EXIT_ERROR
         results[code] = results.get(code, 0) + 1
         if code == EXIT_ERROR:
             failed.append(model_name)
 
-    sys.exit(EXIT_ERROR if failed else EXIT_SUCCESS)
+    raise SystemExit(EXIT_ERROR if failed else EXIT_SUCCESS)

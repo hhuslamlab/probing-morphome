@@ -33,12 +33,11 @@ Options:
 """
 
 import os
-import sys
 
 import numpy as np
 from sklearn.model_selection import StratifiedGroupKFold, cross_validate
 
-from probing import EXIT_ERROR, EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import MODEL_TYPES, SPLITS
 from probing.analysis_common import (
     LAYERS,
     load_labels_and_groups,
@@ -65,7 +64,7 @@ def parse_args():
     args.probe_types = args.probe_types.split()
     bad = set(args.probe_types) - {"linear", "mlp"}
     if bad:
-        raise SystemExit(f"invalid --probe-types: {sorted(bad)}")
+        raise ValueError(f"invalid --probe-types: {sorted(bad)}")
     return args
 
 
@@ -105,7 +104,7 @@ if __name__ == "__main__":
     valid_name = "stemfinal_valid.npy" if args.suffix == "stemfinal" else "prealt_valid.npy"
     valid_path = os.path.join(cache, valid_name)
     if not os.path.exists(valid_path):
-        sys.exit(f"No {args.suffix} readout cache at {cache}")
+        raise FileNotFoundError(f"No {args.suffix} readout cache at {cache}")
     valid = np.load(valid_path)
 
     config = load_config(args.config)
@@ -135,4 +134,3 @@ if __name__ == "__main__":
                 ))
 
     write_rows(out_path, rows)
-    sys.exit(EXIT_SUCCESS)

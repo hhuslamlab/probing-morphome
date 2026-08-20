@@ -21,12 +21,11 @@ Options:
 """
 
 import os
-import sys
 
 import numpy as np
 import torch
 
-from probing import EXIT_ERROR, EXIT_SKIPPED, EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import EXIT_SKIPPED, MODEL_TYPES, SPLITS
 from probing.analysis_common import LAYERS
 from probing.extract_labels import _get_stem
 from probing.run_probes_stemfinal_lnl import get_src_path, get_tgt_path
@@ -80,7 +79,7 @@ if __name__ == "__main__":
     reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     cache_dir = os.path.join(args.cache_dir, args.model_type, f"{args.split}_{args.run}")
     if not os.path.exists(os.path.join(reps_dir, "metadata.json")):
-        sys.exit(f"No representations at {reps_dir}")
+        raise FileNotFoundError(f"No representations at {reps_dir}")
     os.makedirs(cache_dir, exist_ok=True)
 
     targets = [os.path.join(cache_dir, f"{lt}_layer_{li}_stemfinal.npy") for lt, li in LAYERS]
@@ -90,7 +89,7 @@ if __name__ == "__main__":
     if (all(os.path.exists(t) for t in targets) and os.path.exists(valid_path)
             and os.path.exists(prealt_valid_path)):
         print(f"Skipping {args.model_type}/{args.split}_{args.run} -- all stemfinal/prealt readouts cached")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     with open(get_src_path(args.data_dir, args.split, args.run)) as f:
         src_lines = [l.strip() for l in f]
@@ -164,5 +163,4 @@ if __name__ == "__main__":
     np.save(prealt_valid_path, valid & (dec_sf_arr > 0))
     frac = float(valid.mean())
     if frac < 0.99:
-        sys.exit("Alignment below 99%% -- investigate before probing")
-    sys.exit(EXIT_SUCCESS)
+        raise ValueError("Alignment below 99% -- investigate before probing")

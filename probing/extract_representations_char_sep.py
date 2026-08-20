@@ -39,7 +39,6 @@ import json
 import math
 import os
 import re
-import sys
 
 import torch
 import torch.nn.functional as F
@@ -434,7 +433,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     tgt_dict_path = os.path.join(data_bin, f"dict.{run}.tgt.txt")
     for p in (src_dict_path, tgt_dict_path, test_src, test_tgt):
         if not os.path.exists(p):
-            print(f"Missing required file: {p}", file=sys.stderr)
+            print(f"Missing required file: {p}")
             return EXIT_ERROR
 
     src_symbols, src_sym2idx = load_fairseq_dict(src_dict_path)
@@ -447,7 +446,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     # Correctness gate: a dictionary that does not match the embedding table
     # would map characters to the wrong rows and yield meaningless vectors.
     if len(src_symbols) != src_rows_dim or len(tgt_symbols) != tgt_rows_dim:
-        print(f"Dictionary/checkpoint vocab mismatch for run {run}: src dict={len(src_symbols)} vs embed={src_rows_dim}, tgt dict={len(tgt_symbols)} vs embed={tgt_rows_dim}. Point --data-bin at the matching seperate_char data directory.", file=sys.stderr)
+        print(f"Dictionary/checkpoint vocab mismatch for run {run}: src dict={len(src_symbols)} vs embed={src_rows_dim}, tgt dict={len(tgt_symbols)} vs embed={tgt_rows_dim}. Point --data-bin at the matching seperate_char data directory.")
         return EXIT_ERROR
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -459,7 +458,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     with open(test_tgt, encoding="utf-8") as fh:
         tgt_lines = [ln.rstrip("\n") for ln in fh]
     if len(src_lines) != len(tgt_lines):
-        print(f"test src/tgt length mismatch: {len(src_lines)} vs {len(tgt_lines)}", file=sys.stderr)
+        print(f"test src/tgt length mismatch: {len(src_lines)} vs {len(tgt_lines)}")
         return EXIT_ERROR
 
     src_encoded = [encode_line(ln, src_sym2idx) for ln in src_lines]
@@ -497,7 +496,7 @@ def extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, batc
     hooks.remove()
 
     if not batch_reps:
-        print(f"No representations collected for run {run}", file=sys.stderr)
+        print(f"No representations collected for run {run}")
         return EXIT_ERROR
 
     os.makedirs(output_path, exist_ok=True)
@@ -564,7 +563,7 @@ if __name__ == "__main__":
 
     if args.all:
         if not args.data_root:
-            sys.exit("--all requires --data-root")
+            raise ValueError("--all requires --data-root")
         model_dirs = sorted(glob.glob(os.path.join(args.checkpoint_root, "*-models")))
         skipped = [d for d in model_dirs if d.endswith("_old") or d.endswith("_bk")]
         model_dirs = [d for d in model_dirs if not (d.endswith("_old") or d.endswith("_bk"))]
@@ -583,16 +582,16 @@ if __name__ == "__main__":
             test_src, test_tgt = default_test_files(data_bin, run, None, None)
             rc = extract_one(checkpoint, data_bin, run, output_path, test_src, test_tgt, args.batch_size)
             any_error = any_error or (rc == EXIT_ERROR)
-        sys.exit(EXIT_ERROR if any_error else EXIT_SUCCESS)
+        raise SystemExit(EXIT_ERROR if any_error else EXIT_SUCCESS)
 
     if not args.checkpoint or not args.data_bin:
-        sys.exit("Single-model mode requires --checkpoint and --data-bin (or use --all)")
+        raise ValueError("Single-model mode requires --checkpoint and --data-bin (or use --all)")
     model_dir = os.path.dirname(args.checkpoint)
     split, run = parse_split_run(model_dir)
     output_path = os.path.join(args.output_dir, args.model_type, f"{split}_{run}")
     if os.path.exists(os.path.join(output_path, "encoder_layer_0.pt")):
         print(f"Skipping {args.model_type}/{split}_{run} -- already extracted")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
     test_src, test_tgt = default_test_files(args.data_bin, run, args.test_src, args.test_tgt)
     rc = extract_one(args.checkpoint, args.data_bin, run, output_path, test_src, test_tgt, args.batch_size)
-    sys.exit(rc)
+    raise SystemExit(rc)

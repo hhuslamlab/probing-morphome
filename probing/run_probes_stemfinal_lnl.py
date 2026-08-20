@@ -60,7 +60,6 @@ Options:
 
 import json
 import os
-import sys
 
 import numpy as np
 import torch
@@ -70,7 +69,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from probing import EXIT_ERROR, EXIT_SKIPPED, EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import EXIT_SKIPPED, MODEL_TYPES, SPLITS
 from probing.extract_labels import (
     CONJUGATION_MAP,
     LSHAPED_MAP,
@@ -210,7 +209,7 @@ def build_property_labels(src_path, tgt_path, data_dir):
         lnl_labels.append(LSHAPED_MAP["L"] if is_l else LSHAPED_MAP["NL"])
 
     if n_conj_miss or n_lnl_miss:
-        print(f"WARNING: Lemma lookup misses (used fallback): {n_conj_miss} conjugation, {n_lnl_miss} l_shaped", file=sys.stderr)
+        print(f"WARNING: Lemma lookup misses (used fallback): {n_conj_miss} conjugation, {n_lnl_miss} l_shaped")
 
     return {
         "stem_final_match": np.array(stemfinal_labels, dtype=np.int64),
@@ -269,7 +268,7 @@ def run_probe_on_subset(
 
     n_classes = len(np.unique(y))
     if n_classes < 2:
-        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (< 2 classes in {len(y)} samples)", file=sys.stderr)
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (< 2 classes in {len(y)} samples)")
         return results
 
     # Cap folds by the sparsest class: StratifiedKFold needs n_splits <= the
@@ -283,7 +282,7 @@ def run_probe_on_subset(
         n_folds = min(cv_folds, per_class_groups)
     n_groups = len(np.unique(groups))
     if n_folds < 2:
-        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (n_folds<2: classes={n_classes}, lemma groups={n_groups})", file=sys.stderr)
+        print(f"WARNING:   {layer_type}_{layer_index} | {subset_name} | {property_name}: skipping (n_folds<2: classes={n_classes}, lemma groups={n_groups})")
         return results
 
     _, counts = np.unique(y, return_counts=True)
@@ -376,10 +375,10 @@ if __name__ == "__main__":
     output_path = os.path.join(output_dir, f"{args.split}_{args.run}_stemfinal_lnl_results{variant}.csv")
     if os.path.exists(output_path):
         print(f"Skipping {args.model_type}/{args.split}_{args.run} -- results already exist")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     if not os.path.exists(args.config):
-        sys.exit(f"Config not found: {args.config}")
+        raise FileNotFoundError(f"Config not found: {args.config}")
     config = load_config(args.config)
 
     # Validate representations directory (or the pooled cache standing in for it)
@@ -389,7 +388,7 @@ if __name__ == "__main__":
         reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     metadata_path = os.path.join(reps_dir, "metadata.json")
     if not os.path.exists(metadata_path):
-        sys.exit(f"Representations not found: {reps_dir}")
+        raise FileNotFoundError(f"Representations not found: {reps_dir}")
 
     with open(metadata_path) as f:
         metadata = json.load(f)
@@ -402,13 +401,13 @@ if __name__ == "__main__":
     src_path = get_src_path(args.data_dir, args.split, args.run)
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            sys.exit(f"Data file not found: {path}")
+            raise FileNotFoundError(f"Data file not found: {path}")
 
     labels = build_property_labels(src_path, tgt_path, args.data_dir)
 
     for prop, y in labels.items():
         if len(y) != n_samples:
-            sys.exit(f"Sample count mismatch for {prop}: data={len(y)}, representations={n_samples}")
+            raise ValueError(f"Sample count mismatch for {prop}: data={len(y)}, representations={n_samples}")
 
     for prop, y in labels.items():
         unique, counts = np.unique(y, return_counts=True)
@@ -425,7 +424,7 @@ if __name__ == "__main__":
     probe_types = args.probe_types.split()
     bad = set(probe_types) - {"linear", "mlp"}
     if bad:
-        sys.exit(f"Invalid --probe-types: {sorted(bad)}")
+        raise ValueError(f"Invalid --probe-types: {sorted(bad)}")
 
     seed = config["probe"]["random_seed"]
     rng = np.random.RandomState(seed)
@@ -442,12 +441,12 @@ if __name__ == "__main__":
                 reps_dir, f"{layer_type}_layer_{layer_index}_{args.pool_positions}.npy"
             )
             if not os.path.exists(pooled_path):
-                sys.exit(f"Pooled cache incomplete: missing {pooled_path}")
+                raise FileNotFoundError(f"Pooled cache incomplete: missing {pooled_path}")
             X_all = np.load(pooled_path)
         else:
             rep_path = os.path.join(reps_dir, f"{layer_type}_layer_{layer_index}.pt")
             if not os.path.exists(rep_path):
-                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing rep file", file=sys.stderr)
+                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing rep file")
                 continue
             reps = torch.load(rep_path, weights_only=False)
 
@@ -458,7 +457,7 @@ if __name__ == "__main__":
                 args.pool_positions,
             )
             if mask is None:
-                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing mask file", file=sys.stderr)
+                print(f"WARNING: Skipping {layer_type}_{layer_index}: missing mask file")
                 continue
             X_all = pool_reps(reps, mask, args.pool_positions).numpy()
         probe_site = "content-pool" if args.pool_positions == "content" else f"pool-{args.pool_positions}"
@@ -507,5 +506,3 @@ if __name__ == "__main__":
         f.write(",".join(columns) + "\n")
         for row in all_results:
             f.write(",".join(fmt(row[c]) for c in columns) + "\n")
-
-    sys.exit(EXIT_SUCCESS)

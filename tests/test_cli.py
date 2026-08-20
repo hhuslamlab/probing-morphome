@@ -102,7 +102,7 @@ class TestCliHelper:
         monkeypatch.setattr(sys, "argv",
                             ["x", "--model-type", "bogus", "--split", "10L_90NL",
                              "--run", "1_2"])
-        with pytest.raises(SystemExit):
+        with pytest.raises(ValueError):
             transfer.parse_args()
 
     def test_full_parse_maps_attributes(self, monkeypatch):
@@ -125,5 +125,5 @@ class TestCliHelper:
         monkeypatch.setattr(sys, "argv",
                             ["x", "--split", "10L_90NL", "--run", "1_1",
                              "--baselines", "bogus"])
-        with pytest.raises(SystemExit):
+        with pytest.raises(ValueError):
             ngram.parse_args()

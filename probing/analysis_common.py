@@ -6,7 +6,6 @@ shape so each driver contains only the science.
 """
 
 import os
-import sys
 
 import numpy as np
 
@@ -33,7 +32,7 @@ def output_path_or_skip(output_dir, model_type, filename):
     out_path = os.path.join(out_dir, filename)
     if os.path.exists(out_path):
         print(f"Skipping {out_path} -- exists")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
     return out_path
 
 

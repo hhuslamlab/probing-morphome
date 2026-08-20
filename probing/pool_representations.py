@@ -28,12 +28,11 @@ Options:
 import json
 import os
 import shutil
-import sys
 
 import numpy as np
 import torch
 
-from probing import EXIT_ERROR, EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import MODEL_TYPES, SPLITS
 from probing.utils.cli import parse
 from probing.utils.content_mask import load_pool_mask, pool_reps
 
@@ -60,7 +59,7 @@ if __name__ == "__main__":
     reps_dir = os.path.join(args.representations_dir, args.model_type, f"{args.split}_{args.run}")
     metadata_path = os.path.join(reps_dir, "metadata.json")
     if not os.path.exists(metadata_path):
-        sys.exit(f"Representations not found: {reps_dir}")
+        raise FileNotFoundError(f"Representations not found: {reps_dir}")
 
     with open(metadata_path) as f:
         metadata = json.load(f)
@@ -86,10 +85,10 @@ if __name__ == "__main__":
 
         rep_path = os.path.join(reps_dir, f"{base}.pt")
         if not os.path.exists(rep_path):
-            sys.exit(f"Missing rep file: {rep_path}")
+            raise FileNotFoundError(f"Missing rep file: {rep_path}")
         mask = load_pool_mask(reps_dir, layer_type, layer_index, args.pool_positions)
         if mask is None:
-            sys.exit(f"Missing mask file for {base} in {reps_dir}")
+            raise FileNotFoundError(f"Missing mask file for {base} in {reps_dir}")
 
         reps = torch.load(rep_path, weights_only=False)
         pooled = pool_in_chunks(reps, mask, args.pool_positions, args.chunk_size).numpy()
@@ -101,5 +100,3 @@ if __name__ == "__main__":
         np.save(tmp_path, pooled)
         os.replace(tmp_path, out_path)
         n_pooled += 1
-
-    sys.exit(EXIT_SUCCESS)

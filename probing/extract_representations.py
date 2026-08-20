@@ -41,7 +41,7 @@ _scripts_dir = os.path.join(FEATURE_INFORMED_ROOT, "scripts")
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
 
-from probing import MODEL_TYPES, SPLITS, EXIT_SUCCESS, EXIT_ERROR, EXIT_SKIPPED
+from probing import MODEL_TYPES, SPLITS, EXIT_SKIPPED
 from probing.utils.cli import parse, standard_sentinels
 from probing.utils.hooks import HookManager
 from probing.utils.content_mask import build_content_mask
@@ -71,7 +71,7 @@ def reset_model_weights(model, seed):
                 for p in module.parameters(recurse=False):
                     touched_param_ids.add(id(p))
             except Exception as e:  # noqa: BLE001
-                print(f"WARNING: reset_parameters failed on {module.__class__.__name__}: {e} — will fall back to normal init", file=sys.stderr)
+                print(f"WARNING: reset_parameters failed on {module.__class__.__name__}: {e} — will fall back to normal init")
 
     fallback_count = 0
     for name, param in model.named_parameters():
@@ -149,16 +149,16 @@ if __name__ == "__main__":
     check_file = os.path.join(output_path, "encoder_layer_0.pt")
     if os.path.exists(check_file):
         print(f"Skipping {args.model_type}/{args.split}_{args.run} (baseline={args.baseline}) -- already extracted")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     files = get_data_files(args.data_dir, args.split, args.run)
     for subset, paths in files.items():
         for path in paths:
             if not os.path.exists(path):
-                sys.exit(f"Missing {subset} file: {path}")
+                raise FileNotFoundError(f"Missing {subset} file: {path}")
 
     if not os.path.exists(args.checkpoint):
-        sys.exit(f"Checkpoint not found: {args.checkpoint}")
+        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
     # Import model classes so torch.load can unpickle them.  transformer is
     # always required: vanilla / character_separated use Transformer directly,
@@ -171,7 +171,7 @@ if __name__ == "__main__":
         try:
             __import__(_optional_model_module)
         except ImportError as e:
-            print(f"WARNING: Optional model module {_optional_model_module} unavailable ({e}); checkpoints of that architecture cannot be unpickled.", file=sys.stderr)
+            print(f"WARNING: Optional model module {_optional_model_module} unavailable ({e}); checkpoints of that architecture cannot be unpickled.")
 
     # Some checkpoints (e.g. several feature_invariant 50L/90L runs) were pickled
     # from a repo layout where these modules lived under a top-level `src`
@@ -266,7 +266,7 @@ if __name__ == "__main__":
     hook_manager.remove_hooks()
 
     if not batch_reps:
-        sys.exit("No representations collected -- check model and data")
+        raise ValueError("No representations collected -- check model and data")
 
     # Masks are tiny (no embed dim) so they stay in RAM; pad to global max seq_len.
     src_masks = pad_and_concatenate(batch_src_masks, pad_dim=1)  # [n_samples, max_src_len]
@@ -319,5 +319,3 @@ if __name__ == "__main__":
     }
     with open(os.path.join(output_path, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
-
-    sys.exit(EXIT_SUCCESS)

@@ -25,7 +25,7 @@ def parse(doc, types=None, choices=None, sentinels=None, version=None):
     for attr, allowed in (choices or {}).items():
         value = getattr(ns, attr, None)
         if value is not None and value not in allowed:
-            raise SystemExit(
+            raise ValueError(
                 f"invalid --{attr.replace('_', '-')}: {value!r} (choose from {sorted(allowed)})")
     return ns
 

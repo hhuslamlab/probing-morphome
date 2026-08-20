@@ -68,7 +68,7 @@ def load_all(results_dir):
             df["arch"] = arch
             frames.append(df)
     if not frames:
-        raise SystemExit(f"No result CSVs found under {results_dir}")
+        raise FileNotFoundError(f"No result CSVs found under {results_dir}")
     return pd.concat(frames, ignore_index=True)
 
 

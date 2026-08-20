@@ -27,14 +27,13 @@ Options:
 """
 
 import os
-import sys
 
 import numpy as np
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.model_selection import cross_validate
 
-from probing import EXIT_SUCCESS, MODEL_TYPES, SPLITS
+from probing import MODEL_TYPES, SPLITS
 from probing.analysis_common import (
     load_labels_and_groups,
     load_layer,
@@ -151,4 +150,3 @@ if __name__ == "__main__":
         rows.append(row)
 
     write_rows(out_path, rows)
-    sys.exit(EXIT_SUCCESS)

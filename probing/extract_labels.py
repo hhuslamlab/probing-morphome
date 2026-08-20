@@ -19,13 +19,12 @@ Options:
 import json
 import os
 import re
-import sys
 from collections import Counter
 
 import numpy as np
 import torch
 
-from probing import SPLITS, PROPERTIES, EXIT_SUCCESS, EXIT_ERROR, EXIT_SKIPPED
+from probing import SPLITS, PROPERTIES, EXIT_SKIPPED
 from probing.control_tasks import (
     CONTROL_UNIT,
     build_units,
@@ -363,7 +362,7 @@ if __name__ == "__main__":
     output_path = os.path.join(args.output_dir, f"{args.split}_{args.run}_labels.pt")
     if os.path.exists(output_path):
         print(f"Skipping {args.split}_{args.run} -- labels already extracted")
-        sys.exit(EXIT_SKIPPED)
+        raise SystemExit(EXIT_SKIPPED)
 
     run_num = args.run.split("_")[0]
     model_name = f"{args.split}_{args.run}"
@@ -376,7 +375,7 @@ if __name__ == "__main__":
 
     for path in (src_path, tgt_path):
         if not os.path.exists(path):
-            sys.exit(f"Missing file: {path}")
+            raise FileNotFoundError(f"Missing file: {path}")
 
     lshaped_lookup, n_l_lemmas, n_nl_lemmas = build_lshaped_lookup(args.data_dir)
 
@@ -398,7 +397,7 @@ if __name__ == "__main__":
         tgt_lines = [line.strip() for line in f]
 
     if len(src_lines) != len(tgt_lines):
-        sys.exit(f"Line count mismatch: {len(src_lines)} src vs {len(tgt_lines)} tgt")
+        raise ValueError(f"Line count mismatch: {len(src_lines)} src vs {len(tgt_lines)} tgt")
 
     n_samples = len(src_lines)
 
@@ -430,13 +429,13 @@ if __name__ == "__main__":
             value = tag_fields[prop]
             encoding_map = LABEL_ENCODINGS[prop]
             if value not in encoding_map:
-                sys.exit(f"Unknown {prop} value '{value}' at line {i + 1}")
+                raise ValueError(f"Unknown {prop} value '{value}' at line {i + 1}")
             labels[prop].append(encoding_map[value])
 
         # Source-position probes (primacy/recency bias)
         for src_idx, src_fields in [("src1", src1_fields), ("src2", src2_fields)]:
             if src_fields is None:
-                sys.exit(f"Could not parse {src_idx} tag at line {i + 1}")
+                raise ValueError(f"Could not parse {src_idx} tag at line {i + 1}")
             labels[f"{src_idx}_mood"].append(MOOD_MAP[src_fields["mood"]])
             labels[f"{src_idx}_person"].append(PERSON_MAP[src_fields["person"]])
 
@@ -448,7 +447,7 @@ if __name__ == "__main__":
             is_l = lshaped_lookup[key]
             labels["l_shaped"].append(LSHAPED_MAP["L"] if is_l else LSHAPED_MAP["NL"])
         else:
-            print(f"WARNING: No lemma match for (tag={target_tag_bare}, form={normalized_form}) at line {i + 1}", file=sys.stderr)
+            print(f"WARNING: No lemma match for (tag={target_tag_bare}, form={normalized_form}) at line {i + 1}")
             labels["l_shaped"].append(LSHAPED_MAP["NL"])
 
         # Diphthongization (lemma-level, binary) — the second morphome
@@ -518,7 +517,7 @@ if __name__ == "__main__":
         control_tensors = {}
         for prop in PROPERTIES:
             if prop not in CONTROL_UNIT:
-                print(f"WARNING: No control-task unit registered for {prop} — skipping", file=sys.stderr)
+                print(f"WARNING: No control-task unit registered for {prop} — skipping")
                 continue
             real = label_tensors[prop].numpy()
             if len(np.unique(real)) < 2:
@@ -549,5 +548,3 @@ if __name__ == "__main__":
             },
             control_path,
         )
-
-    sys.exit(EXIT_SUCCESS)
