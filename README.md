@@ -7,11 +7,11 @@ Transformers for the Spanish L-shaped Morphome*](https://arxiv.org/abs/2608.0345
 
 ```
 probing/
-  extract_representations.py           # extractor: pickled in-house transformer checkpoints
-  extract_representations_vanilla.py   # extractor: fairseq vanilla checkpoints (pure-PyTorch reimpl.)
-  extract_representations_char_sep.py  # extractor: fairseq char-separated checkpoints
+  extract_representations.py           
+  extract_representations_vanilla.py   
+  extract_representations_char_sep.py  
   extract_labels.py                    # morphological property labels from .src/.tgt test files
-  pool_representations.py              # content-mean pooling into a compact local cache
+  pool_representations.py              # content-mean pooling
   pool_stemfinal_position.py           # stem-final position pooling (positional readout)
   run_probes_stemfinal_lnl.py          # main probes: stem_final_match / conjugation / l_shaped
   run_probes_lnl_within_stemfinal.py   # L vs NL within stem-final subsets
@@ -24,8 +24,8 @@ probing/
   make_paper_assets.py                 # paper tables and figures
   control_tasks.py, analysis_common.py, utils/, config.json
 tests/                                 # pytest suite for the analysis code
-data/probing/results_*/                # result CSVs behind the paper's numbers (tracked)
-reproduce_probing.sh                   # stage-by-stage reproduction driver
+data/probing/results_*/                # result CSVs behind the paper's numbers 
+reproduce_probing.sh                   # stage-by-stage reproduction 
 ```
 
 ## Installation
